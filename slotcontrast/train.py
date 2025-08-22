@@ -263,6 +263,7 @@ def main(args, config_overrides=None):
         enable_progress_bar=(not args.quiet and not args.no_interactive),
         enable_model_summary=not args.quiet,
         enable_checkpointing="checkpointer" in callbacks,
+        num_sanity_val_steps=0,
         **trainer_config,
     )
 

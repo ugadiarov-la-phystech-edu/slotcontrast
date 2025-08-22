@@ -180,7 +180,7 @@ def build(config):
             )
     else:
         raise ValueError(f"Unknown dataset transforms module `{dataset}`")
-    if dataset != "dummy":
+    if True or dataset != "dummy":
         # At this point in the transforms, videos are in CFHW format.
         # Now reorder to FCHW format.
         if dataset_type == "video":
