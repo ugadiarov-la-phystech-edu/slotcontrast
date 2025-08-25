@@ -630,7 +630,8 @@ class EpisodesDataModule(pl.LightningDataModule):
         root: str,
         extension: str,
         sequence_length: int,
-        batch_size: int,
+        train_batch_size: int,
+        val_batch_size: int,
         num_workers: int,
         train_transforms: Optional[Callable] = None,
         val_transforms: Optional[Callable] = None,
@@ -639,7 +640,8 @@ class EpisodesDataModule(pl.LightningDataModule):
         self.root = root
         self.extension = extension
         self.sequence_length = sequence_length
-        self.batch_size = batch_size
+        self.train_batch_size = train_batch_size
+        self.val_batch_size = val_batch_size
         self.num_workers = num_workers
         self.train_transforms = train_transforms
         self.val_transforms = val_transforms
@@ -651,7 +653,8 @@ class EpisodesDataModule(pl.LightningDataModule):
         res.append(f"  - Root: {self.root}")
         res.append(f"  - Extension: {self.extension}")
         res.append(f"  - Sequence length: {self.sequence_length}")
-        res.append(f"  - Batch size: {self.batch_size}")
+        res.append(f"  - Train batch size: {self.train_batch_size}")
+        res.append(f"  - Val batch size: {self.val_batch_size}")
         res.append(f"  - Num workers: {self.num_workers}")
         return "\n".join(res)
 
@@ -662,9 +665,9 @@ class EpisodesDataModule(pl.LightningDataModule):
                                        self.sequence_length)
 
     def train_dataloader(self):
-        return torch.utils.data.DataLoader(self.train_set, batch_size=self.batch_size, num_workers=self.num_workers,
+        return torch.utils.data.DataLoader(self.train_set, batch_size=self.train_batch_size, num_workers=self.num_workers,
                                            shuffle=True)
 
     def val_dataloader(self):
-        return torch.utils.data.DataLoader(self.val_set, batch_size=self.batch_size, num_workers=self.num_workers,
+        return torch.utils.data.DataLoader(self.val_set, batch_size=self.val_batch_size, num_workers=self.num_workers,
                                            shuffle=True)
