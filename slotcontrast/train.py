@@ -64,7 +64,7 @@ def _setup_callbacks(args, config, log_path: pathlib.Path, dataset=None) -> Dict
         checkpointer = pl.callbacks.ModelCheckpoint(
             log_path / CHECKPOINT_SUBDIR,
             filename="best-checkpoint_{step}",
-            monitor="val_loss",
+            monitor="val/loss",
             save_top_k=1,
             save_last=True,
             verbose=args.verbose,
