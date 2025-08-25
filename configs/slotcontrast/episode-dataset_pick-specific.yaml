@@ -100,6 +100,7 @@ dataset:
   extension: png
   sequence_length: 8
   batch_size: ${globals.BATCH_SIZE_PER_GPU}
+  num_workers: 8
   train_transforms:
     name: episodes-dataset_train
     type: video

@@ -631,6 +631,7 @@ class EpisodesDataModule(pl.LightningDataModule):
         extension: str,
         sequence_length: int,
         batch_size: int,
+        num_workers: int,
         train_transforms: Optional[Callable] = None,
         val_transforms: Optional[Callable] = None,
     ):
@@ -639,6 +640,7 @@ class EpisodesDataModule(pl.LightningDataModule):
         self.extension = extension
         self.sequence_length = sequence_length
         self.batch_size = batch_size
+        self.num_workers = num_workers
         self.train_transforms = train_transforms
         self.val_transforms = val_transforms
         self.train_set = None
@@ -650,6 +652,7 @@ class EpisodesDataModule(pl.LightningDataModule):
         res.append(f"  - Extension: {self.extension}")
         res.append(f"  - Sequence length: {self.sequence_length}")
         res.append(f"  - Batch size: {self.batch_size}")
+        res.append(f"  - Num workers: {self.num_workers}")
         return "\n".join(res)
 
     def setup(self, stage):
@@ -659,7 +662,9 @@ class EpisodesDataModule(pl.LightningDataModule):
                                        self.sequence_length)
 
     def train_dataloader(self):
-        return torch.utils.data.DataLoader(self.train_set, batch_size=self.batch_size, shuffle=True)
+        return torch.utils.data.DataLoader(self.train_set, batch_size=self.batch_size, num_workers=self.num_workers,
+                                           shuffle=True)
 
     def val_dataloader(self):
-        return torch.utils.data.DataLoader(self.val_set, batch_size=self.batch_size, shuffle=True)
+        return torch.utils.data.DataLoader(self.val_set, batch_size=self.batch_size, num_workers=self.num_workers,
+                                           shuffle=True)
