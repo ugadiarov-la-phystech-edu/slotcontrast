@@ -11,6 +11,7 @@ import webdataset as wds
 from omegaconf import ListConfig
 from torch.utils.data._utils import collate as torch_collate
 
+from slotcontrast.datasets.episode_dataset import EpisodesDataset
 from slotcontrast.data import pipelines, transforms
 from slotcontrast.data.utils import get_data_root_dir, worker_init_function
 from slotcontrast.utils import config_as_kwargs
@@ -35,6 +36,18 @@ def build(config, name: Optional[str] = "WebdatasetDataModule", data_dir: Option
         )
     elif name == "DummyDataModule":
         return DummyDataModule(
+            train_transforms=transforms.build(config.train_transforms),
+            val_transforms=transforms.build(config.val_transforms),
+            **config_as_kwargs(
+                config,
+                to_filter=(
+                    "train_transforms",
+                    "val_transforms",
+                ),
+            ),
+        )
+    elif name == "EpisodesDataModule":
+        return EpisodesDataModule(
             train_transforms=transforms.build(config.train_transforms),
             val_transforms=transforms.build(config.val_transforms),
             **config_as_kwargs(
@@ -609,3 +622,44 @@ class DummyDataModule(pl.LightningDataModule):
 
     def val_dataloader(self):
         return torch.utils.data.DataLoader(self.val_set, batch_size=self.batch_size, shuffle=False)
+
+
+class EpisodesDataModule(pl.LightningDataModule):
+    def __init__(
+        self,
+        root: str,
+        extension: str,
+        sequence_length: int,
+        batch_size: int,
+        train_transforms: Optional[Callable] = None,
+        val_transforms: Optional[Callable] = None,
+    ):
+        super().__init__()
+        self.root = root
+        self.extension = extension
+        self.sequence_length = sequence_length
+        self.batch_size = batch_size
+        self.train_transforms = train_transforms
+        self.val_transforms = val_transforms
+        self.train_set = None
+        self.val_set = None
+
+    def __str__(self) -> str:
+        res = ["EpisodesDataModule"]
+        res.append(f"  - Root: {self.root}")
+        res.append(f"  - Extension: {self.extension}")
+        res.append(f"  - Sequence length: {self.sequence_length}")
+        res.append(f"  - Batch size: {self.batch_size}")
+        return "\n".join(res)
+
+    def setup(self, stage):
+        self.train_set = EpisodesDataset(self.root, 'train', self.train_transforms, self.extension, 'video',
+                                         self.sequence_length)
+        self.val_set = EpisodesDataset(self.root, 'val', self.val_transforms, self.extension, 'video',
+                                       self.sequence_length)
+
+    def train_dataloader(self):
+        return torch.utils.data.DataLoader(self.train_set, batch_size=self.batch_size, shuffle=True)
+
+    def val_dataloader(self):
+        return torch.utils.data.DataLoader(self.val_set, batch_size=self.batch_size, shuffle=True)

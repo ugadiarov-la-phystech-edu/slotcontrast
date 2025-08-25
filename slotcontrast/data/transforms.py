@@ -25,6 +25,7 @@ DATASET_TYPES = {
     "movi": "video",
     "dummy": "video",
     "dummyimage": "image",
+    "episodes-dataset": "video",
 }
 
 
@@ -178,6 +179,9 @@ def build(config):
                     DenseToOneHotMask(num_classes=config.num_classes),
                 ]
             )
+    elif dataset == "episodes-dataset":
+        if "target_size" in config:
+            raise NotImplementedError("Separate targets not implemented for transform `coco`")
     else:
         raise ValueError(f"Unknown dataset transforms module `{dataset}`")
     if dataset != "dummy":

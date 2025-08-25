@@ -1,0 +1,117 @@
+experiment_group: slotcontrast
+experiment_name: pick-specific
+
+globals:
+  NUM_SLOTS: 8
+  SLOT_DIM: 64
+  DINO_MODEL: vit_small_patch14_dinov2
+  FEAT_DIM: 384
+  NUM_PATCHES: 576
+  NUM_GPUS: 1
+  BATCH_SIZE_PER_GPU: 64
+  TOTAL_BATCH_SIZE: "${mul: ${.NUM_GPUS}, ${.BATCH_SIZE_PER_GPU}}"
+
+trainer:
+  max_steps: 100000
+  log_every_n_steps: 100
+  val_check_interval: 312
+  gradient_clip_val: 0.05
+
+optimizer:
+  name: Adam
+  lr: 0.0004
+  lr_scheduler:
+    name: exp_decay_with_warmup
+    warmup_steps: 2500
+    decay_steps: ${trainer.max_steps}
+
+model:
+  input_type: video
+  visualize: true
+  visualize_every_n_steps: 99999999999
+  losses:
+    loss_featrec:
+      name: MSELoss
+      pred_dims:
+        - 0
+        - ${globals.FEAT_DIM}
+    loss_ss:
+      name: Slot_Slot_Contrastive_Loss
+      pred_key: processor.state
+      temperature: 0.1
+      batch_contrast: true
+      patch_inputs: false
+      keep_input_dim: true
+
+  loss_weights:
+    loss_featrec: 1.0
+    loss_ss: 0.5
+
+  initializer:
+    name: FixedLearnedInit
+    n_slots: ${globals.NUM_SLOTS}
+    dim: ${globals.SLOT_DIM}
+
+  encoder:
+    backbone:
+      name: TimmExtractor
+      model: ${globals.DINO_MODEL}
+      features:
+      - vit_block12
+      - vit_block_keys12
+      frozen: true
+      pretrained: true
+      model_kwargs:
+        dynamic_img_size: True
+    output_transform:
+      name: networks.two_layer_mlp
+      inp_dim: ${globals.FEAT_DIM}
+      outp_dim: ${globals.SLOT_DIM}
+      hidden_dim: "${mul: ${globals.FEAT_DIM}, 2}"
+      layer_norm: true
+
+  grouper:
+    name: SlotAttention
+    inp_dim: ${globals.SLOT_DIM}
+    slot_dim: ${globals.SLOT_DIM}
+    n_iters: 2
+    use_mlp: true
+
+  latent_processor:
+    first_step_corrector_args:
+      n_iters: 3
+
+  decoder:
+    name: MLPDecoder
+    inp_dim: ${globals.SLOT_DIM}
+    outp_dim: ${globals.FEAT_DIM}
+    hidden_dims: [1024, 1024, 1024]
+    n_patches: ${globals.NUM_PATCHES}
+
+  predictor:
+    name: networks.TransformerEncoder
+    dim: ${globals.SLOT_DIM}
+    n_blocks: 1
+    n_heads: 4
+
+dataset:
+  name: EpisodesDataModule
+  root: null
+  extension: png
+  sequence_length: 8
+  batch_size: ${globals.BATCH_SIZE_PER_GPU}
+  train_transforms:
+    name: episodes-dataset_train
+    type: video
+    input_size: 336
+    h_flip_prob: 0.5
+  val_transforms:
+    name: episodes-dataset_val
+    type: video
+    input_size: 336
+    num_classes: 0
+
+comet:
+  project: null
+  run_name: null
+  run_id: null

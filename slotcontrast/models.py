@@ -12,6 +12,10 @@ from slotcontrast import configuration, losses, modules, optimizers, utils, visu
 from slotcontrast.data.transforms import Denormalize
 
 
+MASKS = [f"{x}_masks" for x in ("decoder", "grouping", "dynamics_predictor")]
+MASKS.extend([f"{x}_hard" for x in MASKS] + [f"{x}_vis_hard" for x in MASKS])
+
+
 def build(
     model_config: configuration.ModelConfig,
     optimizer_config,
@@ -116,7 +120,7 @@ def build(
     if model_config.masks_to_visualize:
         masks_to_visualize = model_config.masks_to_visualize
     else:
-        masks_to_visualize = "decoder"
+        masks_to_visualize = "decoder_masks_vis_hard"
 
     model = ObjectCentricModel(
         optimizer_builder,
@@ -164,7 +168,7 @@ class ObjectCentricModel(pl.LightningModule):
         target_encoder_input: Optional[str] = None,
         visualize: bool = False,
         visualize_every_n_steps: Optional[int] = None,
-        masks_to_visualize: Union[str, List[str]] = "decoder",
+        masks_to_visualize: Union[str, List[str]] = "decoder_masks_vis_hard",
     ):
         super().__init__()
         self.optimizer_builder = optimizer_builder
@@ -205,9 +209,9 @@ class ObjectCentricModel(pl.LightningModule):
         if isinstance(masks_to_visualize, str):
             masks_to_visualize = [masks_to_visualize]
         for key in masks_to_visualize:
-            if key not in ("decoder", "grouping", "dynamics_predictor"):
-                raise ValueError(f"Unknown mask type {key}. Should be `decoder` or `grouping`.")
-        self.mask_keys_to_visualize = [f"{key}_masks" for key in masks_to_visualize]
+            if key not in MASKS:
+                raise ValueError(f"Unknown mask type {key}. Should be one of {MASKS}.")
+        self.mask_keys_to_visualize = list(masks_to_visualize)
 
         if input_type == "image":
             self.input_key = "image"
@@ -402,10 +406,11 @@ class ObjectCentricModel(pl.LightningModule):
             self.visualize
             and self.trainer.global_step % self.visualize_every_n_steps == 0
             and self.global_rank == 0
+            and self.trainer.global_step > 0
         ):
             self._log_inputs(
                 batch[self.input_key],
-                {key: aux_outputs[f"{key}_hard"] for key in self.mask_keys_to_visualize},
+                {key: aux_outputs[key] for key in self.mask_keys_to_visualize},
                 mode="train",
             )
             self._log_masks(aux_outputs, self.mask_keys_to_visualize, mode="train")
@@ -447,14 +452,16 @@ class ObjectCentricModel(pl.LightningModule):
 
         if self.visualize and batch_idx == 0 and self.global_rank == 0:
             masks_to_vis = {
-                key: aux_outputs[f"{key}_vis_hard"] for key in self.mask_keys_to_visualize
+                key: aux_outputs[key] for key in self.mask_keys_to_visualize
             }
-            if batch["segmentations"].shape[-2:] != batch[self.input_key].shape[-2:]:
-                masks_to_vis["segmentations"] = self.mask_resizers["segmentation"](
-                    batch["segmentations"], batch[self.input_key]
-                )
-            else:
-                masks_to_vis["segmentations"] = batch["segmentations"]
+            if "segmentations" in batch:
+                if batch["segmentations"].shape[-2:] != batch[self.input_key].shape[-2:]:
+                    masks_to_vis["segmentations"] = self.mask_resizers["segmentation"](
+                        batch["segmentations"], batch[self.input_key]
+                    )
+                else:
+                    masks_to_vis["segmentations"] = batch["segmentations"]
+
             self._log_inputs(
                 batch[self.input_key],
                 masks_to_vis,
@@ -526,6 +533,7 @@ class ObjectCentricModel(pl.LightningModule):
         mode="val",
         types: tuple = ("frames",),
         step: Optional[int] = None,
+        n_examples: int = 2,
     ):
         if step is None:
             step = self.trainer.global_step
@@ -533,16 +541,18 @@ class ObjectCentricModel(pl.LightningModule):
             if mask_key in aux_outputs:
                 masks = aux_outputs[mask_key]
                 if self.input_key == "video":
-                    _, f, n_obj, H, W = masks.shape
-                    first_masks = masks[0].permute(1, 0, 2, 3)
-                    first_masks_inverted = 1 - first_masks.reshape(n_obj, f, 1, H, W)
-                    self._log_video(
-                        f"{mode}/{mask_key}",
-                        first_masks_inverted,
-                        global_step=step,
-                        n_examples=n_obj,
-                        types=types,
-                    )
+                    b, f, n_obj, H, W = masks.shape
+                    n_examples = min(n_examples, b)
+                    for i in range(n_examples):
+                        first_masks = masks[i].permute(1, 0, 2, 3)
+                        first_masks_inverted = 1 - first_masks.reshape(n_obj, f, 1, H, W)
+                        self._log_video(
+                            f"{mode}/{mask_key}_{i}",
+                            first_masks_inverted,
+                            global_step=step,
+                            n_examples=n_obj,
+                            types=types,
+                        )
                 elif self.input_key == "image":
                     _, n_obj, H, W = masks.shape
                     first_masks_inverted = 1 - masks[0].reshape(n_obj, 1, H, W)
@@ -560,26 +570,31 @@ class ObjectCentricModel(pl.LightningModule):
     def _log_video(
         self,
         name: str,
-        data: torch.Tensor,
+        video: torch.Tensor,
         global_step: int,
         n_examples: int = 8,
         max_frames: int = 8,
         types: tuple = ("frames",),
     ):
-        data = data[:n_examples]
-        logger = self._get_tensorboard_logger()
+        video = video[:n_examples]
+        loggers = [self._get_tensorboard_logger(), self._get_comet_logger()]
+        loggers = [logger for logger in loggers if logger is not None]
 
-        if logger is not None:
+        for logger in loggers:
             if "video" in types:
-                logger.experiment.add_video(f"{name}/video", data, global_step=global_step)
+                if not isinstance(logger, pl.loggers.CometLogger):
+                    logger.experiment.add_video(f"{name}/video", video, global_step=global_step)
             if "frames" in types:
-                _, num_frames, _, _, _ = data.shape
+                _, num_frames, _, _, _ = video.shape
                 num_frames = min(max_frames, num_frames)
-                data = data[:, :num_frames]
+                data = video[:, :num_frames]
                 data = data.flatten(0, 1)
-                logger.experiment.add_image(
-                    f"{name}/frames", make_grid(data, nrow=num_frames), global_step=global_step
-                )
+                if isinstance(logger, pl.loggers.CometLogger):
+                    logger.experiment.log_image(name=f"{name}/frames", image_data=make_grid(data, nrow=num_frames).detach().cpu().movedim(0, 2),
+                                                step=global_step)
+                else:
+                    logger.experiment.add_image(f"{name}/frames", make_grid(data, nrow=num_frames),
+                                                global_step=global_step)
 
     def _save_video(self, name: str, data: torch.Tensor, global_step: int):
         assert (
@@ -599,12 +614,15 @@ class ObjectCentricModel(pl.LightningModule):
     ):
         n_examples = min(n_examples, data.shape[0])
         data = data[:n_examples]
-        logger = self._get_tensorboard_logger()
+        loggers = [self._get_tensorboard_logger(), self._get_comet_logger()]
+        loggers = [logger for logger in loggers if logger is not None]
 
-        if logger is not None:
-            logger.experiment.add_image(
-                f"{name}/images", make_grid(data, nrow=n_examples), global_step=global_step
-            )
+        for logger in loggers:
+            if isinstance(logger, pl.loggers.CometLogger):
+                logger.experiment.log_image(name=f"{name}/images", image_data=make_grid(data, nrow=n_examples),
+                                            step=global_step)
+            else:
+                logger.experiment.add_image(f"{name}/images", make_grid(data, nrow=n_examples), global_step=global_step)
 
     @staticmethod
     def _remove_padding(
@@ -633,6 +651,15 @@ class ObjectCentricModel(pl.LightningModule):
                     return logger
         else:
             if isinstance(self.logger, pl.loggers.tensorboard.TensorBoardLogger):
+                return self.logger
+
+    def _get_comet_logger(self):
+        if self.loggers is not None:
+            for logger in self.loggers:
+                if isinstance(logger, pl.loggers.CometLogger):
+                    return logger
+        else:
+            if isinstance(self.logger, pl.loggers.CometLogger):
                 return self.logger
 
     def on_load_checkpoint(self, checkpoint):
