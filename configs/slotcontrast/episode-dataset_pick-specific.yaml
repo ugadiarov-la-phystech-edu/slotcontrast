@@ -29,6 +29,7 @@ model:
   input_type: video
   visualize: true
   visualize_every_n_steps: 99999999999
+  masks_to_visualize: [decoder_masks, decoder_masks_vis_hard, grouping_masks, grouping_masks_vis_hard]
   losses:
     loss_featrec:
       name: MSELoss
