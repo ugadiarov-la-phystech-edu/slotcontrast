@@ -16,6 +16,7 @@ trainer:
   log_every_n_steps: 100
   val_check_interval: 312
   gradient_clip_val: 0.05
+  accumulate_grad_batches: 1
 
 optimizer:
   name: Adam

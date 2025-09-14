@@ -139,6 +139,10 @@ def _setup_trainer_config(trainer_config: Dict[str, Any]) -> Dict[str, Any]:
     if "accelerator" not in trainer_config:
         trainer_config["accelerator"] = "auto"
 
+    if "accumulate_grad_batches" not in trainer_config:
+        trainer_config["accumulate_grad_batches"] = 1
+        log_info(f"Setting accumulate_grad_batches to {trainer_config['accumulate_grad_batches']} by default")
+
     # Automatically select DDP as strategy if possible and not specified otherwise.
     if (
         "strategy" not in trainer_config
