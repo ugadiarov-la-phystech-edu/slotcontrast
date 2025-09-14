@@ -38,6 +38,15 @@ def mix_videos_with_masks(
     return input_with_masks.reshape(*input_shape)
 
 
+def masks_on_video(
+    video: torch.Tensor, masks: torch.Tensor
+) -> torch.Tensor:
+    video = video.unsqueeze(1)
+    masks = masks.unsqueeze(2)
+    video_with_masks = torch.cat([video, video * masks + (1 - masks)], dim=1)
+    return video_with_masks
+
+
 def mix_images_with_masks(
     image: torch.Tensor, masks: torch.Tensor, alpha: float = 0.4
 ) -> torch.Tensor:

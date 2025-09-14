@@ -12,7 +12,7 @@ from slotcontrast import configuration, losses, modules, optimizers, utils, visu
 from slotcontrast.data.transforms import Denormalize
 
 
-MASKS = [f"{x}_masks" for x in ("decoder", "grouping", "dynamics_predictor")]
+MASKS = [f"{x}_masks" for x in ("decoder", "grouping", "dynamics_predictor", "image_decoder")]
 MASKS.extend([f"{x}_hard" for x in MASKS] + [f"{x}_vis_hard" for x in MASKS])
 
 
@@ -28,6 +28,7 @@ def build(
     encoder = modules.build_encoder(model_config.encoder, "FrameEncoder")
     grouper = modules.build_grouper(model_config.grouper)
     decoder = modules.build_decoder(model_config.decoder)
+    image_decoder = None if model_config.image_decoder is None else modules.build_decoder(model_config.image_decoder)
 
     target_encoder = None
     if model_config.target_encoder:
@@ -46,6 +47,9 @@ def build(
     elif input_type == "video":
         encoder = modules.MapOverTime(encoder)
         decoder = modules.MapOverTime(decoder)
+        if image_decoder is not None:
+            image_decoder = modules.MapOverTime(image_decoder)
+
         if target_encoder:
             target_encoder = modules.MapOverTime(target_encoder)
         if model_config.predictor is not None:
@@ -90,6 +94,7 @@ def build(
             for name, loss_config in model_config.losses.items()
         }
 
+    visualization_size = model_config.get('visualization_size', None)
     if model_config.mask_resizers:
         mask_resizers = {
             name: modules.build_utils(resizer_config, "Resizer")
@@ -105,6 +110,7 @@ def build(
                     "patch_inputs": target_type == "features",
                     "video_inputs": input_type == "video",
                     "resize_mode": "bilinear",
+                    "size": visualization_size,
                 }
             ),
             "grouping": modules.build_utils(
@@ -113,6 +119,29 @@ def build(
                     "patch_inputs": True,
                     "video_inputs": input_type == "video",
                     "resize_mode": "bilinear",
+                    "size": visualization_size,
+                }
+            ),
+            "image_decoder": modules.build_utils(
+                {
+                    "name": "Resizer",
+                    # When using features as targets, assume patch-shaped outputs. With other
+                    # targets, assume spatial outputs.
+                    "patch_inputs": False,
+                    "video_inputs": input_type == "video",
+                    "resize_mode": "bilinear",
+                    "size": visualization_size,
+                }
+            ),
+            "source": modules.build_utils(
+                {
+                    "name": "Resizer",
+                    # When using features as targets, assume patch-shaped outputs. With other
+                    # targets, assume spatial outputs.
+                    "patch_inputs": False,
+                    "video_inputs": input_type == "video",
+                    "resize_mode": "bilinear",
+                    "size": visualization_size,
                 }
             ),
         }
@@ -129,6 +158,7 @@ def build(
         processor,
         decoder,
         loss_fns,
+        image_decoder=image_decoder,
         loss_weights=model_config.get("loss_weights", None),
         target_encoder=target_encoder,
         dynamics_predictor=dynamics_predictor,
@@ -158,6 +188,7 @@ class ObjectCentricModel(pl.LightningModule):
         decoder: nn.Module,
         loss_fns: Dict[str, losses.Loss],
         *,
+        image_decoder: Optional[nn.Module] = None,
         loss_weights: Optional[Dict[str, float]] = None,
         target_encoder: Optional[nn.Module] = None,
         dynamics_predictor: Optional[nn.Module] = None,
@@ -176,6 +207,7 @@ class ObjectCentricModel(pl.LightningModule):
         self.encoder = encoder
         self.processor = processor
         self.decoder = decoder
+        self.image_decoder = image_decoder
         self.target_encoder = target_encoder
         self.dynamics_predictor = dynamics_predictor
 
@@ -250,11 +282,22 @@ class ObjectCentricModel(pl.LightningModule):
         slots = processor_output["state"]
         decoder_output = self.decoder(slots)
 
+        image_decoder_output = None
+        if self.image_decoder is not None:
+            image_decoder_output = self.image_decoder(slots)
+            image_decoder_output['reconstruction'] = image_decoder_output['reconstruction'].flatten(end_dim=1)
+            size = image_decoder_output['reconstruction'].shape[-2:]
+            inputs['image_decoder'] = dict(source=nn.functional.interpolate(
+                inputs['video'].flatten(end_dim=1), size=size, mode='bilinear'
+            ))
+            assert image_decoder_output['reconstruction'].shape == inputs['image_decoder']['source'].shape
+
         outputs = {
             "batch_size": batch_size,
             "encoder": encoder_output,
             "processor": processor_output,
             "decoder": decoder_output,
+            "image_decoder": image_decoder_output,
         }
 
         if self.dynamics_predictor:
@@ -308,6 +351,13 @@ class ObjectCentricModel(pl.LightningModule):
             grouping_masks, inputs, self.mask_resizers.get("grouping")
         )
 
+        image_decoder_output = outputs.get('image_decoder', None)
+        image_decoder_masks = image_decoder_masks_hard = image_decoder_masks_metrics_hard = None
+        if image_decoder_output is not None:
+            image_decoder_masks, image_decoder_masks_hard, image_decoder_masks_metrics_hard = self.process_masks(
+                image_decoder_output['masks'], inputs, self.mask_resizers.get("image_decoder")
+            )
+
         aux_outputs = {}
         if decoder_masks is not None:
             aux_outputs["decoder_masks"] = decoder_masks
@@ -321,6 +371,12 @@ class ObjectCentricModel(pl.LightningModule):
             aux_outputs["grouping_masks_vis_hard"] = grouping_masks_hard
         if grouping_masks_metrics_hard is not None:
             aux_outputs["grouping_masks_hard"] = grouping_masks_metrics_hard
+        if image_decoder_masks is not None:
+            aux_outputs["image_decoder_masks"] = image_decoder_masks
+        if image_decoder_masks_hard is not None:
+            aux_outputs["image_decoder_masks_hard"] = image_decoder_masks_hard
+        if image_decoder_masks_metrics_hard is not None:
+            aux_outputs["image_decoder_masks_metrics_hard"] = image_decoder_masks_metrics_hard
 
         if self.dynamics_predictor:
             dynamics_predictor_masks = outputs["decoder"].get("predicted_masks")
@@ -400,6 +456,7 @@ class ObjectCentricModel(pl.LightningModule):
                 metric.reset()
         self.log_dict(to_log, on_step=True, on_epoch=False, batch_size=outputs["batch_size"])
 
+        reconstruction = outputs['image_decoder']['reconstruction'] if 'image_decoder' in outputs else None
         del outputs  # Explicitly delete to save memory
 
         if (
@@ -410,10 +467,11 @@ class ObjectCentricModel(pl.LightningModule):
         ):
             self._log_inputs(
                 batch[self.input_key],
-                {key: aux_outputs[key] for key in self.mask_keys_to_visualize},
+                masks_by_name={},
                 mode="train",
+                reconstruction=reconstruction
             )
-            self._log_masks(aux_outputs, self.mask_keys_to_visualize, mode="train")
+            self._log_masks(aux_outputs, self.mask_keys_to_visualize, mode="train", inputs=batch[self.input_key], mix_with_source=True)
 
         return total_loss
 
@@ -450,6 +508,9 @@ class ObjectCentricModel(pl.LightningModule):
             to_log, on_step=False, on_epoch=True, batch_size=outputs["batch_size"], prog_bar=True
         )
 
+        reconstruction = outputs['image_decoder']['reconstruction'] if 'image_decoder' in outputs else None
+        del outputs
+
         if self.visualize and batch_idx == 0 and self.global_rank == 0:
             masks_to_vis = {
                 key: aux_outputs[key] for key in self.mask_keys_to_visualize
@@ -464,10 +525,11 @@ class ObjectCentricModel(pl.LightningModule):
 
             self._log_inputs(
                 batch[self.input_key],
-                masks_to_vis,
+                masks_by_name={},
                 mode="val",
+                reconstruction=reconstruction,
             )
-            self._log_masks(aux_outputs, self.mask_keys_to_visualize, mode="val")
+            self._log_masks(aux_outputs, self.mask_keys_to_visualize, mode="val", inputs=batch[self.input_key], mix_with_source=True)
 
     def validation_epoch_end(self, outputs):
         if self.val_metrics:
@@ -493,14 +555,30 @@ class ObjectCentricModel(pl.LightningModule):
         masks_by_name: Dict[str, torch.Tensor],
         mode: str,
         step: Optional[int] = None,
+        reconstruction: Optional[torch.Tensor] = None,
     ):
         denorm = Denormalize(input_type=self.input_key)
         if step is None:
             step = self.trainer.global_step
 
+        resizer = self.mask_resizers.get("source")
         if self.input_key == "video":
             video = torch.stack([denorm(video) for video in inputs])
-            self._log_video(f"{mode}/{self.input_key}", video, global_step=step)
+            video = resizer(video)
+            if reconstruction is not None:
+                if len(video.shape) == len(reconstruction.shape) + 1:
+                    # batch dimension is flatten in reconstruction
+                    assert np.prod(video.shape[:2]) == reconstruction.shape[0], f'video.shape={video.shape} reconstruction.shape={reconstruction.shape}'
+                    reconstruction = reconstruction.unflatten(dim=0, sizes=video.shape[:2])
+                elif len(video.shape) != len(reconstruction.shape):
+                    raise ValueError(f'Unexpected shape of reconstruction: {reconstruction.shape}. Video shape: {video.shape}')
+
+                reconstruction = resizer(reconstruction)
+                reconstruction = torch.stack([denorm(r) for r in reconstruction]).clamp(0, 1)
+                assert video.shape == reconstruction.shape, f'video.shape={video.shape} reconstruction.shape={reconstruction.shape}'
+                # Merge ground truth video and its reconstruction vertically
+                video = torch.cat([video, reconstruction], dim=-2)
+                self._log_video(f"{mode}/{self.input_key}", video, global_step=step)
             for mask_name, masks in masks_by_name.items():
                 if "dynamics_predictor" in mask_name:
                     rollout_length = masks.shape[1]
@@ -534,7 +612,13 @@ class ObjectCentricModel(pl.LightningModule):
         types: tuple = ("frames",),
         step: Optional[int] = None,
         n_examples: int = 2,
+        inputs: Optional[torch.Tensor] = None,
+        mix_with_source: bool = False,
     ):
+        denorm = Denormalize(input_type=self.input_key)
+        video = torch.stack([denorm(video) for video in inputs])
+        resizer = self.mask_resizers.get("source")
+        video = resizer(video)
         if step is None:
             step = self.trainer.global_step
         for mask_key in mask_keys:
@@ -544,13 +628,16 @@ class ObjectCentricModel(pl.LightningModule):
                     b, f, n_obj, H, W = masks.shape
                     n_examples = min(n_examples, b)
                     for i in range(n_examples):
-                        first_masks = masks[i].permute(1, 0, 2, 3)
-                        first_masks_inverted = 1 - first_masks.reshape(n_obj, f, 1, H, W)
+                        if mix_with_source:
+                            masks_video = visualizations.masks_on_video(video[i], masks[i]).movedim(0, 1)
+                        else:
+                            masks_video = masks[i].permute(1, 0, 2, 3)
+                            masks_video = 1 - masks_video.reshape(n_obj, f, 1, H, W)
                         self._log_video(
                             f"{mode}/{mask_key}_{i}",
-                            first_masks_inverted,
+                            masks_video,
                             global_step=step,
-                            n_examples=n_obj,
+                            n_examples=n_obj + int(mix_with_source),
                             types=types,
                         )
                 elif self.input_key == "image":

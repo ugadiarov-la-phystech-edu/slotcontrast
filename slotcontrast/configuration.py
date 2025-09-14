@@ -1,7 +1,7 @@
 import pathlib
 from dataclasses import MISSING, dataclass, field
 from functools import reduce
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from omegaconf import OmegaConf
 
@@ -14,6 +14,7 @@ class ModelConfig:
     encoder: ModuleConfig
     grouper: ModuleConfig
     decoder: ModuleConfig
+    image_decoder: Optional[ModuleConfig] = None
     dynamics_predictor: Optional[ModuleConfig] = None
     predictor: Optional[ModuleConfig] = None
     target_encoder: Optional[ModuleConfig] = None
@@ -25,6 +26,7 @@ class ModelConfig:
     target_type: str = "features"
     target_encoder_input: Optional[str] = None
     visualize: bool = False
+    visualization_size: Optional[Tuple[int, int]] = None
     eval_mode_config: Optional[Dict[str, Any]] = None
     visualize_every_n_steps: Optional[int] = 1000
     masks_to_visualize: Optional[List[str]] = None

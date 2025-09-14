@@ -6,6 +6,7 @@ import torch
 from torch import nn
 
 from slotcontrast.modules import networks, utils
+from slotcontrast.modules.utils import Conv2dBlock, conv2d, PositionalEmbedding
 from slotcontrast.utils import config_as_kwargs, make_build_fn
 
 
@@ -21,6 +22,9 @@ def build(config, name: str):
             output_transform=output_transform,
             **config_as_kwargs(config, ("backbone", "output_transform")),
         )
+    elif name == "SpatialBroadcastDecoderV2":
+        return SpatialBroadcastDecoderV2(image_size=config.image_size, obs_channels=config.outp_dim,
+                                         hidden_size=config.hidden_size, slot_size=config.inp_dim)
     elif name == "SlotMixerDecoder":
         output_transform = None
         if config.get("output_transform"):
@@ -145,6 +149,39 @@ class SpatialBroadcastDecoder(nn.Module):
         recon = torch.sum(recons * masks, dim=1)
 
         return {"reconstruction": recon, "masks": masks.squeeze(2)}
+
+
+class SpatialBroadcastDecoderV2(nn.Module):
+    def __init__(self, image_size, obs_channels, hidden_size, slot_size):
+        super().__init__()
+        self._obs_size = image_size
+        self._obs_channels = obs_channels
+        self._decoder = nn.Sequential(
+            Conv2dBlock(slot_size, hidden_size, 5, 1, 2),
+            Conv2dBlock(hidden_size, hidden_size, 5, 1, 2),
+            Conv2dBlock(hidden_size, hidden_size, 5, 1, 2),
+            conv2d(hidden_size, obs_channels + 1, 3, 1, 1),
+        )
+        self._pos_emb = PositionalEmbedding(image_size, slot_size)
+
+    def _spatial_broadcast(self, slots):
+        slots = slots.unsqueeze(-1).unsqueeze(-1)
+        return slots.repeat(1, 1, self._obs_size, self._obs_size)
+
+    def forward(self, slots):
+        B, N, _ = slots.shape
+        # [batch_size * num_slots, d_slots]
+        slots = slots.flatten(0, 1)
+        # [batch_size * num_slots, d_slots, obs_size, obs_size]
+        slots = self._spatial_broadcast(slots)
+        out = self._decoder(self._pos_emb(slots))
+        img_slots, masks = out[:, : self._obs_channels], out[:, -1:]
+        img_slots = img_slots.view(
+            B, N, self._obs_channels, self._obs_size, self._obs_size
+        )
+        masks = masks.view(B, N, 1, self._obs_size, self._obs_size)
+        masks = masks.softmax(dim=1)
+        return {"reconstruction": torch.sum(img_slots * masks, dim=1), "masks": masks.squeeze(dim=2)}
 
 
 class SlotMixerDecoder(nn.Module):

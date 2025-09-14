@@ -593,3 +593,79 @@ class FeatureTimeSimilarity(FeatureSimilarity):
         similarity = einops.rearrange(similarity, "(b t) p k -> b t p k", b=len(features))
 
         return similarity
+
+
+def conv2d(
+    in_channels,
+    out_channels,
+    kernel_size,
+    stride=1,
+    padding=0,
+    dilation=1,
+    groups=1,
+    bias=True,
+    padding_mode="zeros",
+    weight_init="xavier",
+):
+    m = nn.Conv2d(
+        in_channels,
+        out_channels,
+        kernel_size,
+        stride,
+        padding,
+        dilation,
+        groups,
+        bias,
+        padding_mode,
+    )
+    if weight_init == "kaiming":
+        nn.init.kaiming_uniform_(m.weight, nonlinearity="relu")
+    else:
+        nn.init.xavier_uniform_(m.weight)
+    if bias:
+        nn.init.zeros_(m.bias)
+    return m
+
+
+class Conv2dBlock(nn.Module):
+    def __init__(self, in_channels, out_channels, kernel_size, stride=1, padding=0):
+        super().__init__()
+        self.m = conv2d(
+            in_channels,
+            out_channels,
+            kernel_size,
+            stride,
+            padding,
+            bias=True,
+            weight_init="kaiming",
+        )
+
+    def forward(self, x):
+        x = self.m(x)
+        return nn.functional.relu(x)
+
+
+class PositionalEmbedding(nn.Module):
+    def __init__(self, obs_size: int, obs_channels: int):
+        super().__init__()
+        width = height = obs_size
+        east = torch.linspace(0, 1, width).repeat(height)
+        west = torch.linspace(1, 0, width).repeat(height)
+        south = torch.linspace(0, 1, height).repeat(width)
+        north = torch.linspace(1, 0, height).repeat(width)
+        east = east.reshape(height, width)
+        west = west.reshape(height, width)
+        south = south.reshape(width, height).T
+        north = north.reshape(width, height).T
+        # (4, h, w)
+        linear_pos_embedding = torch.stack([north, south, west, east], dim=0)
+        linear_pos_embedding.unsqueeze_(0)  # for batch size
+        self.channels_map = nn.Conv2d(4, obs_channels, kernel_size=1)
+        self.register_buffer("linear_position_embedding", linear_pos_embedding)
+
+    def forward(self, x):
+        bs_linear_position_embedding = self.linear_position_embedding.expand(
+            x.size(0), 4, x.size(2), x.size(3)
+        )
+        x = x + self.channels_map(bs_linear_position_embedding)
+        return x
