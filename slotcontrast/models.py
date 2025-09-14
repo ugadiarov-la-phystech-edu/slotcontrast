@@ -374,9 +374,9 @@ class ObjectCentricModel(pl.LightningModule):
         if image_decoder_masks is not None:
             aux_outputs["image_decoder_masks"] = image_decoder_masks
         if image_decoder_masks_hard is not None:
-            aux_outputs["image_decoder_masks_hard"] = image_decoder_masks_hard
+            aux_outputs["image_decoder_vis_hard"] = image_decoder_masks_hard
         if image_decoder_masks_metrics_hard is not None:
-            aux_outputs["image_decoder_masks_metrics_hard"] = image_decoder_masks_metrics_hard
+            aux_outputs["image_decoder_masks_hard"] = image_decoder_masks_metrics_hard
 
         if self.dynamics_predictor:
             dynamics_predictor_masks = outputs["decoder"].get("predicted_masks")
