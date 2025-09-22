@@ -124,11 +124,14 @@ dataset:
     name: episodes-dataset_train
     type: video
     input_size: 336
-    h_flip_prob: 0.5
+    rotation_prob: 0.3
+    h_flip_prob: 0.3
   val_transforms:
     name: episodes-dataset_val
     type: video
     input_size: 336
+    rotation_prob: 0.3
+    h_flip_prob: 0.3
     num_classes: 0
 
 comet:

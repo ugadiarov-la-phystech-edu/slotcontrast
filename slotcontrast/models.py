@@ -91,7 +91,7 @@ def build(
     else:
         loss_fns = {
             name: losses.build({**loss_defaults, **loss_config})
-            for name, loss_config in model_config.losses.items()
+            for name, loss_config in model_config.losses.items() if loss_config is not None
         }
 
     visualization_size = model_config.get('visualization_size', None)
@@ -151,6 +151,10 @@ def build(
     else:
         masks_to_visualize = "decoder_masks_vis_hard"
 
+    loss_weights = model_config.get("loss_weights", None)
+    if loss_weights is not None:
+        loss_weights = {key: value for key, value in loss_weights.items() if value is not None}
+
     model = ObjectCentricModel(
         optimizer_builder,
         initializer,
@@ -159,7 +163,7 @@ def build(
         decoder,
         loss_fns,
         image_decoder=image_decoder,
-        loss_weights=model_config.get("loss_weights", None),
+        loss_weights=loss_weights,
         target_encoder=target_encoder,
         dynamics_predictor=dynamics_predictor,
         train_metrics=train_metrics,
@@ -456,8 +460,11 @@ class ObjectCentricModel(pl.LightningModule):
                 metric.reset()
         self.log_dict(to_log, on_step=True, on_epoch=False, batch_size=outputs["batch_size"])
 
-        reconstruction = outputs['image_decoder']['reconstruction'] if 'image_decoder' in outputs else None
-        del outputs  # Explicitly delete to save memory
+        reconstruction = None
+        if outputs.get('image_decoder', None) is not None:
+            reconstruction = outputs['image_decoder']['reconstruction']
+
+        del outputs
 
         if (
             self.visualize
@@ -508,7 +515,10 @@ class ObjectCentricModel(pl.LightningModule):
             to_log, on_step=False, on_epoch=True, batch_size=outputs["batch_size"], prog_bar=True
         )
 
-        reconstruction = outputs['image_decoder']['reconstruction'] if 'image_decoder' in outputs else None
+        reconstruction = None
+        if outputs.get('image_decoder', None) is not None:
+            reconstruction = outputs['image_decoder']['reconstruction']
+
         del outputs
 
         if self.visualize and batch_idx == 0 and self.global_rank == 0:

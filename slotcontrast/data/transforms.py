@@ -5,6 +5,7 @@ from typing import Dict, Optional
 
 import einops
 import numpy as np
+import skimage
 import torch
 from einops.layers.torch import Rearrange
 from torchvision import transforms as tvt
@@ -38,10 +39,11 @@ def build(config):
     dataset_type = DATASET_TYPES[dataset]
     transform_type = config.get("type", "video")
     crop_type = config.get("crop_type", None)
-    h_flip_prob = config.get("h_flip_prob", None)
+    rotation_prob = config.get("rotation_prob", None)
     size = _to_2tuple(config.input_size)
     mask_size = _to_2tuple(config.mask_size) if config.get("mask_size") else size
     use_movi_normalization = config.get("use_movi_normalization", False)
+    h_flip_prob = config.get("h_flip_prob", None)
 
     if dataset_type not in ("image", "video"):
         raise ValueError(f"Unsupported dataset type {transform_type}")
@@ -92,17 +94,20 @@ def build(config):
         normalize = Normalize(
             dataset_type=dataset_type, mean=IMAGENET_DEFAULT_MEAN, std=IMAGENET_DEFAULT_STD
         )
-    input_transform = tvt.Compose(
-        [
-            ToTensorInput(dataset_type=dataset_type),
-            resize_input,
-            normalize,
-        ]
-    )
-    if h_flip_prob is not None:
+
+    input_transform = tvt.Compose([ToTensorInput(dataset_type=dataset_type)])
+    if rotation_prob is not None and rotation_prob > 0:
+        rotation_transforms = [Rotate(dataset_type=dataset_type), tvt.Lambda(lambda x: x)]
+        p = [rotation_prob, 1 - rotation_prob]
+        rotation_transforms = tvt.RandomChoice(rotation_transforms , p=p)
+        input_transform.transforms.append(rotation_transforms)
+
+    if h_flip_prob is not None and h_flip_prob > 0:
         input_transform.transforms.append(
             RandomHorizontalFlip(dataset_type=dataset_type, p=h_flip_prob)
         )
+
+    input_transform.transforms.extend([resize_input, normalize])
     if split == "val":
         segmentation_transformation = tvt.Compose(
             [
@@ -181,7 +186,7 @@ def build(config):
             )
     elif dataset == "episodes-dataset":
         if "target_size" in config:
-            raise NotImplementedError("Separate targets not implemented for transform `coco`")
+            raise NotImplementedError("Separate targets not implemented for transform `episodes-dataset`")
     else:
         raise ValueError(f"Unknown dataset transforms module `{dataset}`")
     if dataset != "dummy":
@@ -278,6 +283,26 @@ class Normalize:
 
     def __call__(self, tensor) -> torch.Tensor:
         return self.norm(tensor)
+
+
+class Rotate:
+    def __init__(self, dataset_type: str):
+        self.dataset_type = dataset_type
+
+    def __call__(self, tensor: torch.Tensor) -> torch.Tensor:
+        tensor = tensor.movedim(0, -1)
+        images = tensor.cpu().numpy()
+        if self.dataset_type == "image":
+            images = images[np.newaxis]
+
+        center = (np.random.random() * images.shape[-1], np.random.random() * images.shape[-2])
+        angle = np.random.random() * 360
+        images = [skimage.transform.rotate(image, angle=angle, mode='reflect', center=center) for image in images]
+        images = np.stack(images)
+        if self.dataset_type == "image":
+            images = images[0]
+
+        return torch.as_tensor(images).movedim(-1, 0)
 
 
 class RandomHorizontalFlip:

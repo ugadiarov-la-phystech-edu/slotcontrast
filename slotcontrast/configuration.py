@@ -20,8 +20,8 @@ class ModelConfig:
     target_encoder: Optional[ModuleConfig] = None
     latent_processor: Optional[ModuleConfig] = None
     mask_resizers: Optional[Dict[str, ModuleConfig]] = None
-    losses: Optional[Dict[str, ModuleConfig]] = None
-    loss_weights: Optional[Dict[str, float]] = None
+    losses: Optional[Dict[str, Optional[ModuleConfig]]] = None
+    loss_weights: Optional[Dict[str, Optional[float]]] = None
     input_type: str = "image"
     target_type: str = "features"
     target_encoder_input: Optional[str] = None
