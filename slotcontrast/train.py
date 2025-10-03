@@ -103,6 +103,7 @@ def _setup_loggers(args, log_path: pathlib.Path, config) -> Dict[str, pl.loggers
         loggers['comet'] = pl.loggers.CometLogger(project_name=config.comet.project,
                                                   experiment_name=config.comet.run_name,
                                                   experiment_key=config.comet.run_id, mode=mode)
+        loggers['comet'].experiment.log_parameters(OmegaConf.to_container(config, resolve=True))
 
     # CSV logs go to <log_dir>/<metrics_subdir>/version_N/metrics.csv, where N is the number of
     # restarts of the job
