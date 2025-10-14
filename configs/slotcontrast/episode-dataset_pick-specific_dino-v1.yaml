@@ -4,9 +4,9 @@ experiment_name: pick-specific
 globals:
   NUM_SLOTS: 8
   SLOT_DIM: 64
-  DINO_MODEL: vit_small_patch14_dinov2
+  DINO_MODEL: vit_small_patch8_224_dino
   FEAT_DIM: 384
-  NUM_PATCHES: 576
+  NUM_PATCHES: 784
   NUM_GPUS: 1
   BATCH_SIZE_PER_GPU: 64
   TOTAL_BATCH_SIZE: "${mul: ${.NUM_GPUS}, ${.BATCH_SIZE_PER_GPU}}"
@@ -123,13 +123,13 @@ dataset:
   train_transforms:
     name: episodes-dataset_train
     type: video
-    input_size: 336
+    input_size: 224
     rotation_prob: 0.0
     h_flip_prob: 0.5
   val_transforms:
     name: episodes-dataset_val
     type: video
-    input_size: 336
+    input_size: 224
     rotation_prob: 0.0
     h_flip_prob: 0.5
     num_classes: 0
