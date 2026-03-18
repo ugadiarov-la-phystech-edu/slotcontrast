@@ -28,6 +28,8 @@ moviepy = "^1.0.3"
 pycocotools = {version = "^2.0.6", optional=true}
 requests = "^2.31.0"
 av = "^12.0.0"
+scikit-image = "0.25.0"
+comet-ml = "^3.57.3"
 
 [tool.poetry.extras]
 tensorflow = ["tensorflow-cpu", "tensorflow_datasets"]
