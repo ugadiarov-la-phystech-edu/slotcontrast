@@ -6,7 +6,7 @@ import random
 
 import einops
 import torch
-from torchvision.transforms import RandomCrop, RandomResizedCrop
+from torchvision.transforms import RandomCrop, RandomResizedCrop, ColorJitter
 
 __all__ = [
     "RandomCropVideo",
@@ -15,6 +15,7 @@ __all__ = [
     "NormalizeVideo",
     "ToTensorVideo",
     "RandomHorizontalFlipVideo",
+    "ColorJitterVideo",
 ]
 
 
@@ -213,6 +214,48 @@ class RandomHorizontalFlipVideo:
 
     def __repr__(self) -> str:
         return f"{self.__class__.__name__}(p={self.p})"
+
+
+class ColorJitterVideo:
+    """
+    Apply color jittering to video frames with given probabilities.
+    
+    Args:
+        brightness (float or tuple): How much to jitter brightness.
+            brightness_factor is chosen uniformly from [max(0, 1 - brightness), 1 + brightness]
+            or the given [min, max]. Should be non negative numbers.
+        contrast (float or tuple): How much to jitter contrast.
+            contrast_factor is chosen uniformly from [max(0, 1 - contrast), 1 + contrast]
+            or the given [min, max]. Should be non negative numbers.
+        saturation (float or tuple): How much to jitter saturation.
+            saturation_factor is chosen uniformly from [max(0, 1 - saturation), 1 + saturation]
+            or the given [min, max]. Should be non negative numbers.
+        hue (float or tuple): How much to jitter hue.
+            hue_factor is chosen uniformly from [-hue, hue] or the given [min, max].
+            Should have 0 <= hue <= 0.5 or -0.5 <= min <= max <= 0.5.
+        p (float): probability of the clip being color jittered. Default value is 1.0
+    """
+
+    def __init__(self, brightness=0, contrast=0, saturation=0, hue=0, p=1.0):
+        self.color_jitter = ColorJitter(brightness=brightness, contrast=contrast, 
+                                       saturation=saturation, hue=hue)
+        self.p = p
+
+    def __call__(self, clip):
+        """
+        Args:
+            clip (torch.tensor): Size is (C, F, H, W)
+        Return:
+            clip (torch.tensor): Size is (C, F, H, W)
+        """
+        if random.random() < self.p:
+            clip = einops.rearrange(clip, "C F H W -> F C H W")
+            clip = self.color_jitter(clip)
+            clip = einops.rearrange(clip, "F C H W -> C F H W")
+        return clip
+
+    def __repr__(self) -> str:
+        return f"{self.__class__.__name__}(color_jitter={self.color_jitter}, p={self.p})"
 
 
 def _is_tensor_video_clip(clip):

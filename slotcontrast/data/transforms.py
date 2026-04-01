@@ -44,6 +44,11 @@ def build(config):
     mask_size = _to_2tuple(config.mask_size) if config.get("mask_size") else size
     use_movi_normalization = config.get("use_movi_normalization", False)
     h_flip_prob = config.get("h_flip_prob", None)
+    color_jitter_brightness = config.get("color_jitter_brightness", None)
+    color_jitter_contrast = config.get("color_jitter_contrast", None)
+    color_jitter_saturation = config.get("color_jitter_saturation", None)
+    color_jitter_hue = config.get("color_jitter_hue", None)
+    color_jitter_prob = config.get("color_jitter_prob", None)
 
     if dataset_type not in ("image", "video"):
         raise ValueError(f"Unsupported dataset type {transform_type}")
@@ -105,6 +110,18 @@ def build(config):
     if h_flip_prob is not None and h_flip_prob > 0:
         input_transform.transforms.append(
             RandomHorizontalFlip(dataset_type=dataset_type, p=h_flip_prob)
+        )
+
+    if color_jitter_prob is not None and color_jitter_prob > 0:
+        input_transform.transforms.append(
+            ColorJitter(
+                dataset_type=dataset_type,
+                brightness=color_jitter_brightness if color_jitter_brightness,
+                contrast=color_jitter_contrast if color_jitter_contrast,
+                saturation=color_jitter_saturation if color_jitter_saturation,
+                hue=color_jitter_hue if color_jitter_hue ,
+                p=color_jitter_prob if color_jitter_prob
+            )
         )
 
     input_transform.transforms.extend([resize_input, normalize])
@@ -322,6 +339,40 @@ class RandomHorizontalFlip:
 
     def __call__(self, tensor: torch.Tensor) -> torch.Tensor:
         return self.flip(tensor)
+
+
+class ColorJitter:
+    """
+    Apply color jittering to a video or image clip.
+    Args:
+        dataset_type (str): Type of dataset ("image" or "video")
+        brightness (float or tuple): How much to jitter brightness
+        contrast (float or tuple): How much to jitter contrast
+        saturation (float or tuple): How much to jitter saturation
+        hue (float or tuple): How much to jitter hue
+        p (float): probability of the clip being color jittered. Default value is 1.0
+    """
+
+    def __init__(self, dataset_type: str, brightness: float = 0.0, contrast: float = 0.0, 
+                 saturation: float = 0.0, hue: float = 0.0, p: float = 1.0):
+        if dataset_type == "image":
+            self.jitter = tvt.ColorJitter(brightness=brightness, contrast=contrast, 
+                                         saturation=saturation, hue=hue)
+        elif dataset_type == "video":
+            self.jitter = transforms_video.ColorJitterVideo(brightness=brightness, contrast=contrast, 
+                                                           saturation=saturation, hue=hue, p=p)
+        else:
+            ValueError(f"Not valid dataset type: {dataset_type}")
+        self.p = p
+
+    def __call__(self, tensor: torch.Tensor) -> torch.Tensor:
+        if isinstance(self.jitter, transforms_video.ColorJitterVideo):
+            return self.jitter(tensor)
+        else:
+            import random
+            if random.random() < self.p:
+                return self.jitter(tensor)
+            return tensor
 
 
 class CropResize:
