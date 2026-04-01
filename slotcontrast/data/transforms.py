@@ -116,11 +116,11 @@ def build(config):
         input_transform.transforms.append(
             ColorJitter(
                 dataset_type=dataset_type,
-                brightness=color_jitter_brightness if color_jitter_brightness,
-                contrast=color_jitter_contrast if color_jitter_contrast,
-                saturation=color_jitter_saturation if color_jitter_saturation,
-                hue=color_jitter_hue if color_jitter_hue ,
-                p=color_jitter_prob if color_jitter_prob
+                brightness=color_jitter_brightness,
+                contrast=color_jitter_contrast,
+                saturation=color_jitter_saturation,
+                hue=color_jitter_hue,
+                p=color_jitter_prob
             )
         )
 
