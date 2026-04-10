@@ -182,7 +182,7 @@ dataset:
     color_jitter_saturation: 0.3
     color_jitter_hue: 0.0
     color_jitter_prob: 0.3
-    num_classes: 0
+    num_classes: ${globals.NUM_SLOTS}
 
 comet:
   project: null
