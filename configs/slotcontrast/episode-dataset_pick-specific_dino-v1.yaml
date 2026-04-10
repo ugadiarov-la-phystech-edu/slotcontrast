@@ -10,6 +10,7 @@ globals:
   NUM_GPUS: 1
   BATCH_SIZE_PER_GPU: 64
   TOTAL_BATCH_SIZE: "${mul: ${.NUM_GPUS}, ${.BATCH_SIZE_PER_GPU}}"
+  NUM_CLASSES: ${.NUM_SLOTS}
 
 trainer:
   max_steps: 100000
@@ -182,7 +183,7 @@ dataset:
     color_jitter_saturation: 0.3
     color_jitter_hue: 0.0
     color_jitter_prob: 0.3
-    num_classes: ${globals.NUM_SLOTS}
+    num_classes: ${globals.NUM_CLASSES}
 
 comet:
   project: null
