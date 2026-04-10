@@ -647,6 +647,7 @@ class ObjectCentricModel(pl.LightningModule):
                             masks.float(), size=(vid_h, vid_w), mode="nearest"
                         ).to(masks.dtype)
                         masks = masks.reshape(b_m, f_m, n_m, vid_h, vid_w)
+                    masks = masks.float()
                     b, f, n_obj, H, W = masks.shape
                     n_examples = min(n_examples, b)
                     for i in range(n_examples):
