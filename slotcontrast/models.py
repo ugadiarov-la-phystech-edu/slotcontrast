@@ -525,6 +525,7 @@ class ObjectCentricModel(pl.LightningModule):
             masks_to_vis = {
                 key: aux_outputs[key] for key in self.mask_keys_to_visualize
             }
+            gt_mask_keys = []
             if "segmentations" in batch:
                 if batch["segmentations"].shape[-2:] != batch[self.input_key].shape[-2:]:
                     masks_to_vis["segmentations"] = self.mask_resizers["segmentation"](
@@ -532,6 +533,8 @@ class ObjectCentricModel(pl.LightningModule):
                     )
                 else:
                     masks_to_vis["segmentations"] = batch["segmentations"]
+                aux_outputs["segmentations"] = masks_to_vis["segmentations"]
+                gt_mask_keys.append("segmentations")
 
             self._log_inputs(
                 batch[self.input_key],
@@ -539,7 +542,7 @@ class ObjectCentricModel(pl.LightningModule):
                 mode="val",
                 reconstruction=reconstruction,
             )
-            self._log_masks(aux_outputs, self.mask_keys_to_visualize, mode="val", inputs=batch[self.input_key], mix_with_source=True)
+            self._log_masks(aux_outputs, self.mask_keys_to_visualize + gt_mask_keys, mode="val", inputs=batch[self.input_key], mix_with_source=True)
 
     def validation_epoch_end(self, outputs):
         if self.val_metrics:

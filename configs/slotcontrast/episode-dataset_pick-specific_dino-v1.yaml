@@ -112,10 +112,50 @@ model:
     n_blocks: 1
     n_heads: 4
 
+val_metrics:
+  ari:
+    name: VideoARI
+    ignore_background: true
+    pred_key: decoder_masks_hard
+    true_key: segmentations
+  image_ari:
+    name: ImageARI
+    ignore_background: true
+    video_input: true
+    pred_key: decoder_masks_hard
+    true_key: segmentations
+  mbo:
+    name: VideoIoU
+    matching: overlap
+    ignore_background: true
+    pred_key: decoder_masks_hard
+    true_key: segmentations
+  image_mbo:
+    name: ImageIoU
+    matching: overlap
+    ignore_background: true
+    video_input: true
+    pred_key: decoder_masks_hard
+    true_key: segmentations
+  miou:
+    name: VideoIoU
+    matching: hungarian
+    ignore_background: true
+    pred_key: decoder_masks_hard
+    true_key: segmentations
+  image_miou:
+    name: ImageIoU
+    matching: hungarian
+    ignore_background: true
+    video_input: true
+    pred_key: decoder_masks_hard
+    true_key: segmentations
+
 dataset:
   name: EpisodesDataModule
   root: null
   extension: png
+  mask_type: instance
   sequence_length: 8
   train_batch_size: ${globals.BATCH_SIZE_PER_GPU}
   val_batch_size: 16
@@ -142,7 +182,7 @@ dataset:
     color_jitter_saturation: 0.3
     color_jitter_hue: 0.0
     color_jitter_prob: 0.3
-    num_classes: 0
+    num_classes: ${globals.NUM_SLOTS}
 
 comet:
   project: null

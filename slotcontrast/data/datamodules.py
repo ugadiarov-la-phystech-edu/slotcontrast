@@ -635,6 +635,7 @@ class EpisodesDataModule(pl.LightningDataModule):
         num_workers: int,
         train_transforms: Optional[Callable] = None,
         val_transforms: Optional[Callable] = None,
+        mask_type: Optional[str] = None,
     ):
         super().__init__()
         self.root = root
@@ -645,6 +646,7 @@ class EpisodesDataModule(pl.LightningDataModule):
         self.num_workers = num_workers
         self.train_transforms = train_transforms
         self.val_transforms = val_transforms
+        self.mask_type = mask_type
         self.train_set = None
         self.val_set = None
 
@@ -660,9 +662,9 @@ class EpisodesDataModule(pl.LightningDataModule):
 
     def setup(self, stage):
         self.train_set = EpisodesDataset(self.root, 'train', self.train_transforms, self.extension, 'video',
-                                         self.sequence_length)
+                                         self.sequence_length, mask_type=self.mask_type)
         self.val_set = EpisodesDataset(self.root, 'val', self.val_transforms, self.extension, 'video',
-                                       self.sequence_length)
+                                       self.sequence_length, mask_type=self.mask_type)
 
     def train_dataloader(self):
         return torch.utils.data.DataLoader(self.train_set, batch_size=self.train_batch_size, num_workers=self.num_workers,

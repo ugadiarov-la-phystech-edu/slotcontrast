@@ -1,4 +1,5 @@
 import time
+from unittest import result
 
 import numpy as np
 from torch.utils.data import Dataset
@@ -11,7 +12,8 @@ ImageFile.LOAD_TRUNCATED_IMAGES = True
 
 
 class EpisodesDataset(Dataset):
-    def __init__(self, root, mode, transforms=None, extension='png', kind='video', sequence_length=1):
+    def __init__(self, root, mode, transforms=None, extension='png', kind='video', sequence_length=1,
+                 mask_extension='png', mask_type=None):
         assert mode in ['train', 'val', 'valid', 'test']
         if mode in ('valid', 'test'):
             mode = 'val'
@@ -30,6 +32,15 @@ class EpisodesDataset(Dataset):
             self.root = root_with_obs
         else:
             self.root = root
+
+        # mask_type selects which mask folder to use: masks_class/, masks_instance/, or masks/
+        if mask_type is not None:
+            masks_root = os.path.join(root, f'masks_{mask_type}')
+        else:
+            masks_root = os.path.join(root, 'masks')
+        self.has_masks = os.path.isdir(masks_root)
+        self.masks_root = masks_root if self.has_masks else None
+        self.mask_extension = mask_extension
 
         self.mode = mode
         self.extension = extension
@@ -65,14 +76,33 @@ class EpisodesDataset(Dataset):
 
         print(f'Dataset indexing took {time.time() - start} seconds')
 
+    def _load_mask(self, image_path):
+        """Load a dense segmentation mask corresponding to an image path.
+
+        Masks are stored as grayscale PNGs where each pixel value is an instance ID
+        (0 = background). The mask file is located by mirroring the image path
+        structure under the masks/ directory.
+        """
+        episode_name = os.path.basename(os.path.dirname(image_path))
+        frame_name = os.path.splitext(os.path.basename(image_path))[0]
+        mask_path = os.path.join(
+            self.masks_root, episode_name, f'{frame_name}.{self.mask_extension}'
+        )
+        # Load as grayscale to get integer IDs
+        mask = np.array(Image.open(mask_path).convert('L'))
+        return mask
+
     def __getitem__(self, index):
         if self.kind == 'video':
             episode_images = self.episode_images[index]
             start_index = np.random.randint(0, len(episode_images) - self.sequence_length + 1)
             image_sequence = []
+            mask_sequence = []
             for image_index in range(start_index, start_index + self.sequence_length):
                 img = np.array(Image.open(episode_images[image_index]))
                 image_sequence.append(img)
+                if self.has_masks:
+                    mask_sequence.append(self._load_mask(episode_images[image_index]))
 
             data = np.stack(image_sequence)
         elif self.kind == 'image':
@@ -81,14 +111,25 @@ class EpisodesDataset(Dataset):
             offset = self.episode2offset[ep]
             in_episode_index = index - offset
             data = np.array(Image.open(self.episode_images[ep][in_episode_index]))
+            if self.has_masks:
+                mask_sequence = [self._load_mask(self.episode_images[ep][in_episode_index])]
         else:
             assert False, 'Cannot happen!'
 
         data = {'__key__': str(index), self.kind: data}
 
+        if self.has_masks:
+            # Dense integer masks: (F, H, W) for video, (H, W) for image
+            # Add trailing dim of 1 for consistency with other datasets: (..., H, W, 1)
+            masks = np.stack(mask_sequence)
+            if self.kind == 'image':
+                masks = masks[0]
+            data['segmentations'] = masks[..., np.newaxis]
+
         if self.transforms:
             for name, transform in self.transforms.items():
-                data[name] = transform(data[name])
+                if name in data:
+                    data[name] = transform(data[name])
 
         return data
 

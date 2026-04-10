@@ -204,6 +204,8 @@ def build(config):
     elif dataset == "episodes-dataset":
         if "target_size" in config:
             raise NotImplementedError("Separate targets not implemented for transform `episodes-dataset`")
+        if split == "val":
+            transforms["segmentations"] = segmentation_transformation
     else:
         raise ValueError(f"Unknown dataset transforms module `{dataset}`")
     if dataset != "dummy":
