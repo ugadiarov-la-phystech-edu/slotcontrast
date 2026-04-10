@@ -638,6 +638,15 @@ class ObjectCentricModel(pl.LightningModule):
             if mask_key in aux_outputs:
                 masks = aux_outputs[mask_key]
                 if self.input_key == "video":
+                    # Resize masks to match visualization video resolution
+                    vid_h, vid_w = video.shape[-2:]
+                    if masks.shape[-2:] != (vid_h, vid_w):
+                        b_m, f_m, n_m, _, _ = masks.shape
+                        masks = masks.reshape(b_m * f_m, n_m, masks.shape[-2], masks.shape[-1])
+                        masks = torch.nn.functional.interpolate(
+                            masks.float(), size=(vid_h, vid_w), mode="nearest"
+                        ).to(masks.dtype)
+                        masks = masks.reshape(b_m, f_m, n_m, vid_h, vid_w)
                     b, f, n_obj, H, W = masks.shape
                     n_examples = min(n_examples, b)
                     for i in range(n_examples):
