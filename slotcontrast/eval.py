@@ -11,7 +11,7 @@ import torch
 from omegaconf import OmegaConf
 from pytorch_lightning.utilities import rank_zero_info as log_info
 
-from ocl import configuration, data, metrics, models, utils
+from slotcontrast import configuration, data, metrics, models, utils
 
 TENSORBOARD_SUBDIR = "tb"
 METRICS_SUBDIR = "metrics"
@@ -24,6 +24,7 @@ parser.add_argument("-n", "--dry", action="store_true", help="Dry run (no logfil
 parser.add_argument(
     "--no-interactive", action="store_true", help="If running in non-interactive environment"
 )
+parser.add_argument("--no-tensorboard", action="store_true", help="Do not write tensorboard logs")
 parser.add_argument("--data-dir", help="Path to data directory")
 parser.add_argument("--config", help="Configuration to run")
 parser.add_argument("--log-dir", help="Path to experiment log directory")
@@ -57,19 +58,32 @@ def _setup_trainer_config(trainer_config: Dict[str, Any]) -> Dict[str, Any]:
     return trainer_config
 
 
-def _setup_loggers(args, log_path: pathlib.Path) -> Dict[str, pl.loggers.logger.Logger]:
+def _setup_loggers(args, log_path: pathlib.Path, config) -> Dict[str, pl.loggers.logger.Logger]:
     if args.dry:
         return {}
 
-    # Tensorboard logs go to <log_dir>/<tensorboard_subdir>/
-    logger_tensorboard = pl.loggers.TensorBoardLogger(
-        save_dir=log_path, name=TENSORBOARD_SUBDIR, version=""
-    )
+    loggers = {}
+    if not args.no_tensorboard:
+        # Tensorboard logs go to <log_dir>/<tensorboard_subdir>/
+        loggers["tensorboard"] = pl.loggers.TensorBoardLogger(
+            save_dir=log_path, name=TENSORBOARD_SUBDIR, version=""
+        )
+
+    if "comet" in config and config.comet is not None and config.comet.project is not None:
+        mode = "create" if config.comet.run_id is None else "get"
+        loggers["comet"] = pl.loggers.CometLogger(
+            project_name=config.comet.project,
+            experiment_name=config.comet.run_name,
+            experiment_key=config.comet.run_id,
+            mode=mode,
+        )
+        loggers["comet"].experiment.log_parameters(OmegaConf.to_container(config, resolve=True))
+
     # CSV logs go to <log_dir>/<metrics_subdir>/version_N/metrics.csv, where N is the number of
     # restarts of the job
-    logger_csv = pl.loggers.CSVLogger(save_dir=log_path, name=METRICS_SUBDIR)
+    loggers["csv"] = pl.loggers.CSVLogger(save_dir=log_path, name=METRICS_SUBDIR)
 
-    return {"tensorboard": logger_tensorboard, "csv": logger_csv}
+    return loggers
 
 
 def main(args, config_overrides=None):
@@ -131,7 +145,7 @@ def main(args, config_overrides=None):
         model.load_weights_from_checkpoint(weights_path, module_mapping=config.model.modules_to_load)
     else:
         raise ValueError(f"Checkpoint file {weights_path} doesn't exist.")
-    loggers = _setup_loggers(args, log_path)
+    loggers = _setup_loggers(args, log_path, config)
     trainer_config = _setup_trainer_config(config.setdefault("trainer", {}))
 
     # Save the final configuration
