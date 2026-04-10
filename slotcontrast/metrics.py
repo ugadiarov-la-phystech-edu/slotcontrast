@@ -14,6 +14,25 @@ def build(config, name: str):
     pass  # No special module building needed
 
 
+def _resize_mask_spatial(mask: torch.Tensor, target_hw: Tuple[int, int]) -> torch.Tensor:
+    """Resize mask tensor spatially with nearest interpolation while preserving dtype."""
+    if mask.shape[-2:] == target_hw:
+        return mask
+
+    original_dtype = mask.dtype
+    if mask.ndim == 5:
+        b, t, c, _, _ = mask.shape
+        mask = einops.rearrange(mask, "b t c h w -> (b t) c h w")
+        mask = torch.nn.functional.interpolate(mask.to(torch.float32), size=target_hw, mode="nearest")
+        mask = einops.rearrange(mask, "(b t) c h w -> b t c h w", b=b, t=t)
+    elif mask.ndim == 4:
+        mask = torch.nn.functional.interpolate(mask.to(torch.float32), size=target_hw, mode="nearest")
+    else:
+        raise ValueError(f"Unsupported mask ndim for resizing: {mask.ndim}")
+
+    return mask.to(original_dtype)
+
+
 class Metric(torchmetrics.Metric):
     def __init__(self, input_mapping: Dict[str, str], **kwargs) -> None:
         super().__init__(**kwargs)
@@ -111,13 +130,15 @@ class ImageMaskMetricMixin:
             b, t, _, h, w = true_mask.shape
             _check_shape(
                 pred_mask,
-                (b, t, None, h, w),
+                (b, t, None, None, None),
                 "pred_mask [bs, n_frames, n_pred_classes, h, w]",
             )
+            true_mask = _resize_mask_spatial(true_mask, pred_mask.shape[-2:])
         else:
             _check_shape(true_mask, (None, None, None, None), "true_mask [bs, n_true_classes, h, w]")
             b, _, h, w = true_mask.shape
-            _check_shape(pred_mask, (b, None, h, w), "pred_mask [bs, n_pred_classes, h, w]")
+            _check_shape(pred_mask, (b, None, None, None), "pred_mask [bs, n_pred_classes, h, w]")
+            true_mask = _resize_mask_spatial(true_mask, pred_mask.shape[-2:])
 
         true_mask = einops.rearrange(true_mask, self.rearrange_pattern)
         pred_mask = einops.rearrange(pred_mask, self.rearrange_pattern)
@@ -197,9 +218,10 @@ class VideoMaskMetricMixin:
         b, t, _, h, w = true_mask.shape
         _check_shape(
             pred_mask,
-            (b, t, None, h, w),
+            (b, t, None, None, None),
             "pred_mask [bs, n_frames, n_pred_classes, h, w]",
         )
+        true_mask = _resize_mask_spatial(true_mask, pred_mask.shape[-2:])
         true_mask = einops.rearrange(true_mask, self.rearrange_pattern)
         pred_mask = einops.rearrange(pred_mask, self.rearrange_pattern)
 
