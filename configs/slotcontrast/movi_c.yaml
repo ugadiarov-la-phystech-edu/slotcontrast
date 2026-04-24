@@ -53,6 +53,12 @@ model:
     n_slots: ${globals.NUM_SLOTS}
     dim: ${globals.SLOT_DIM}
 
+  # background_initializer:
+  #   name: FixedLearnedInit
+  #   n_slots: 1
+  #   dim: ${globals.SLOT_DIM}
+  background_initializer: null
+
   encoder:
     backbone:
       name: TimmExtractor

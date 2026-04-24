@@ -14,6 +14,7 @@ class ModelConfig:
     encoder: ModuleConfig
     grouper: ModuleConfig
     decoder: ModuleConfig
+    background_initializer: Optional[ModuleConfig] = None
     image_decoder: Optional[ModuleConfig] = None
     dynamics_predictor: Optional[ModuleConfig] = None
     predictor: Optional[ModuleConfig] = None

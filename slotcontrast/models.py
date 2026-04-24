@@ -7,6 +7,7 @@ import torch
 import torchmetrics
 from torch import nn
 from torchvision.utils import make_grid
+from omegaconf import OmegaConf
 
 from slotcontrast import configuration, losses, modules, optimizers, utils, visualizations
 from slotcontrast.data.transforms import Denormalize
@@ -27,8 +28,23 @@ def build(
     initializer = modules.build_initializer(model_config.initializer)
     encoder = modules.build_encoder(model_config.encoder, "FrameEncoder")
     grouper = modules.build_grouper(model_config.grouper)
-    decoder = modules.build_decoder(model_config.decoder)
-    image_decoder = None if model_config.image_decoder is None else modules.build_decoder(model_config.image_decoder)
+
+    background_slot_initializer = None
+    n_background_slots = 0
+    if model_config.background_initializer is not None:
+        background_slot_initializer = modules.build_initializer(model_config.background_initializer)
+        n_background_slots = model_config.background_initializer.n_slots
+
+    decoder_config = OmegaConf.merge(
+        model_config.decoder, {"n_background_slots": n_background_slots}
+    )
+    decoder = modules.build_decoder(decoder_config)
+    image_decoder = None
+    if model_config.image_decoder is not None:
+        image_decoder_config = OmegaConf.merge(
+            model_config.image_decoder, {"n_background_slots": n_background_slots}
+        )
+        image_decoder = modules.build_decoder(image_decoder_config)
 
     target_encoder = None
     if model_config.target_encoder:
@@ -166,6 +182,7 @@ def build(
         loss_weights=loss_weights,
         target_encoder=target_encoder,
         dynamics_predictor=dynamics_predictor,
+        background_slot_initializer=background_slot_initializer,
         train_metrics=train_metrics,
         val_metrics=val_metrics,
         mask_resizers=mask_resizers,
@@ -196,6 +213,7 @@ class ObjectCentricModel(pl.LightningModule):
         loss_weights: Optional[Dict[str, float]] = None,
         target_encoder: Optional[nn.Module] = None,
         dynamics_predictor: Optional[nn.Module] = None,
+        background_slot_initializer: Optional[nn.Module] = None,
         train_metrics: Optional[Dict[str, torchmetrics.Metric]] = None,
         val_metrics: Optional[Dict[str, torchmetrics.Metric]] = None,
         mask_resizers: Optional[Dict[str, modules.Resizer]] = None,
@@ -214,6 +232,7 @@ class ObjectCentricModel(pl.LightningModule):
         self.image_decoder = image_decoder
         self.target_encoder = target_encoder
         self.dynamics_predictor = dynamics_predictor
+        self.background_slot_initializer = background_slot_initializer
 
         if loss_weights is not None:
             # Filter out losses that are not used
@@ -269,6 +288,8 @@ class ObjectCentricModel(pl.LightningModule):
             "processor": self.processor,
             "decoder": self.decoder,
         }
+        if self.background_slot_initializer:
+            modules["background_slot_initializer"] = self.background_slot_initializer
         if self.dynamics_predictor:
             modules["dynamics_predictor"] = self.dynamics_predictor
         return self.optimizer_builder(modules)
@@ -284,6 +305,17 @@ class ObjectCentricModel(pl.LightningModule):
         slots_initial = self.initializer(batch_size=batch_size)
         processor_output = self.processor(slots_initial, features)
         slots = processor_output["state"]
+
+        if self.background_slot_initializer is not None:
+            background_slots = self.background_slot_initializer(batch_size=batch_size).clone()
+            # For video inputs, expand background_slots to match temporal dimension
+            if slots.ndim == 4:  # [batch, frames, num_slots, slot_dim]
+                n_frames = slots.shape[1]
+                background_slots_expanded = background_slots.unsqueeze(1).repeat(1, n_frames, 1, 1)
+            else:
+                background_slots_expanded = background_slots
+            slots = torch.cat([slots, background_slots_expanded], dim=-2)
+
         decoder_output = self.decoder(slots)
 
         image_decoder_output = None
@@ -307,6 +339,13 @@ class ObjectCentricModel(pl.LightningModule):
         if self.dynamics_predictor:
             outputs["dynamics_predictor"] = self.dynamics_predictor(slots)
             predicted_slots = outputs["dynamics_predictor"].get("next_state")
+            if self.background_slot_initializer is not None:
+                if predicted_slots.ndim == 4:
+                    n_frames = predicted_slots.shape[1]
+                    bg_slots_for_pred = background_slots.unsqueeze(1).repeat(1, n_frames, 1, 1)
+                else:
+                    bg_slots_for_pred = background_slots
+                predicted_slots = torch.cat([predicted_slots, bg_slots_for_pred], dim=-2)
             decoded_predicted_slots = self.decoder(predicted_slots)
             decoded_predicted_slots = {
                 f"predicted_{key}": value for key, value in decoded_predicted_slots.items()

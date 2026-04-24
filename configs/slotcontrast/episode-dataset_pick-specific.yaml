@@ -64,6 +64,12 @@ model:
     n_slots: ${globals.NUM_SLOTS}
     dim: ${globals.SLOT_DIM}
 
+  # background_initializer:
+  #   name: FixedLearnedInit
+  #   n_slots: 1
+  #   dim: ${globals.SLOT_DIM}
+  background_initializer: null
+
   encoder:
     backbone:
       name: TimmExtractor
@@ -161,6 +167,7 @@ dataset:
   train_batch_size: ${globals.BATCH_SIZE_PER_GPU}
   val_batch_size: 16
   num_workers: 8
+  num_classes: ${globals.NUM_CLASSES}
   train_transforms:
     name: episodes-dataset_train
     type: video

@@ -24,7 +24,8 @@ def build(config, name: str):
         )
     elif name == "SpatialBroadcastDecoderV2":
         return SpatialBroadcastDecoderV2(image_size=config.image_size, obs_channels=config.outp_dim,
-                                         hidden_size=config.hidden_size, slot_size=config.inp_dim)
+                                         hidden_size=config.hidden_size, slot_size=config.inp_dim,
+                                         n_background_slots=config.n_background_slots)
     elif name == "SlotMixerDecoder":
         output_transform = None
         if config.get("output_transform"):
@@ -55,11 +56,13 @@ class MLPDecoder(nn.Module):
         activation: str = "relu",
         eval_output_size: Optional[Tuple[int]] = None,
         frozen: bool = False,
+        n_background_slots: int = 0,
     ):
         super().__init__()
         self.outp_dim = outp_dim
         self.n_patches = n_patches
         self.eval_output_size = list(eval_output_size) if eval_output_size else None
+        self.n_background_slots = n_background_slots
 
         self.mlp = networks.MLP(
             inp_dim, outp_dim + 1, hidden_dims, activation=activation, frozen=frozen
@@ -85,6 +88,10 @@ class MLPDecoder(nn.Module):
 
         recons, alpha = self.mlp(slots).split((self.outp_dim, 1), dim=-1)
 
+        if self.n_background_slots > 0:
+            alpha = alpha.clone()
+            alpha[:, -self.n_background_slots:] = 0
+
         masks = torch.softmax(alpha, dim=1)
         recon = torch.sum(recons * masks, dim=1)
 
@@ -103,9 +110,11 @@ class SpatialBroadcastDecoder(nn.Module):
         backbone_dim: Optional[int] = None,
         pos_embed: Optional[nn.Module] = None,
         output_transform: Optional[nn.Module] = None,
+        n_background_slots: int = 0,
     ):
         super().__init__()
         self.outp_dim = outp_dim
+        self.n_background_slots = n_background_slots
         if isinstance(initial_size, int):
             self.initial_size = (initial_size, initial_size)
         else:
@@ -145,6 +154,10 @@ class SpatialBroadcastDecoder(nn.Module):
         outputs = einops.rearrange(outputs, "(b s) ... -> b s ...", b=bs, s=n_slots)
         recons, alpha = einops.unpack(outputs, [[self.outp_dim], [1]], "b s * h w")
 
+        if self.n_background_slots > 0:
+            alpha = alpha.clone()
+            alpha[:, -self.n_background_slots:] = 0
+
         masks = torch.softmax(alpha, dim=1)
         recon = torch.sum(recons * masks, dim=1)
 
@@ -152,10 +165,11 @@ class SpatialBroadcastDecoder(nn.Module):
 
 
 class SpatialBroadcastDecoderV2(nn.Module):
-    def __init__(self, image_size, obs_channels, hidden_size, slot_size):
+    def __init__(self, image_size, obs_channels, hidden_size, slot_size, n_background_slots=0):
         super().__init__()
         self._obs_size = image_size
         self._obs_channels = obs_channels
+        self.n_background_slots = n_background_slots
         self._decoder = nn.Sequential(
             Conv2dBlock(slot_size, hidden_size, 5, 1, 2),
             Conv2dBlock(hidden_size, hidden_size, 5, 1, 2),
@@ -180,6 +194,9 @@ class SpatialBroadcastDecoderV2(nn.Module):
             B, N, self._obs_channels, self._obs_size, self._obs_size
         )
         masks = masks.view(B, N, 1, self._obs_size, self._obs_size)
+        if self.n_background_slots > 0:
+            masks = masks.clone()
+            masks[:, -self.n_background_slots:] = 0
         masks = masks.softmax(dim=1)
         return {"reconstruction": torch.sum(img_slots * masks, dim=1), "masks": masks.squeeze(dim=2)}
 
