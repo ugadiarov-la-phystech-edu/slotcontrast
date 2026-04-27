@@ -151,6 +151,36 @@ val_metrics:
     video_input: true
     pred_key: decoder_masks_hard
     true_key: segmentations
+  per_class_mbo:
+    name: VideoPerClassIoU
+    matching: overlap
+    ignore_background: true
+    pred_key: decoder_masks_hard
+    true_key: segmentations
+    max_classes: ${globals.NUM_CLASSES}
+  image_per_class_mbo:
+    name: ImagePerClassIoU
+    matching: overlap
+    ignore_background: true
+    video_input: true
+    pred_key: decoder_masks_hard
+    true_key: segmentations
+    max_classes: ${globals.NUM_CLASSES}
+  per_class_miou:
+    name: VideoPerClassIoU
+    matching: hungarian
+    ignore_background: true
+    pred_key: decoder_masks_hard
+    true_key: segmentations
+    max_classes: ${globals.NUM_CLASSES}
+  image_per_class_miou:
+    name: ImagePerClassIoU
+    matching: hungarian
+    ignore_background: true
+    video_input: true
+    pred_key: decoder_masks_hard
+    true_key: segmentations
+    max_classes: ${globals.NUM_CLASSES}
 
 dataset:
   name: EpisodesDataModule

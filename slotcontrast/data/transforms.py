@@ -102,7 +102,7 @@ def build(config):
 
     input_transform = tvt.Compose([ToTensorInput(dataset_type=dataset_type)])
     if rotation_prob is not None and rotation_prob > 0:
-        rotation_transforms = [Rotate(dataset_type=dataset_type), tvt.Lambda(lambda x: x)]
+        rotation_transforms = [Rotate(dataset_type=dataset_type), Identity(dataset_type=dataset_type)]
         p = [rotation_prob, 1 - rotation_prob]
         rotation_transforms = tvt.RandomChoice(rotation_transforms , p=p)
         input_transform.transforms.append(rotation_transforms)
@@ -657,3 +657,16 @@ class DenormalizeImage(tvt.Normalize):
         new_mean = [-m / s for m, s in zip(mean, std)]
         new_std = [1 / s for s in std]
         super().__init__(new_mean, new_std)
+
+
+class Identity:
+    """Identity transform that returns input unchanged. Picklable alternative to Lambda."""
+
+    def __init__(self, dataset_type: Optional[str] = None):
+        pass
+
+    def __call__(self, tensor: torch.Tensor) -> torch.Tensor:
+        return tensor
+
+    def __repr__(self) -> str:
+        return self.__class__.__name__

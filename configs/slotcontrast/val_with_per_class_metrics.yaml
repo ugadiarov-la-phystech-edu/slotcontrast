@@ -1,0 +1,122 @@
+globals:
+  NUM_CLASSES: 24  # Set to actual number of classes in your dataset
+
+# Dataset configuration for evaluation
+dataset:
+  name: EpisodesDataModule
+  root: null  # Set via command line: dataset.root=/path/to/dataset
+  extension: png
+  mask_type: instance
+  sequence_length: 8
+  train_batch_size: 64
+  val_batch_size: 16
+  num_workers: 8
+  num_classes: ${globals.NUM_CLASSES}
+  train_transforms:
+    name: episodes-dataset_train
+    type: video
+    input_size: 336
+    rotation_prob: 0.0
+    h_flip_prob: 0.5
+    color_jitter_brightness: 0.3
+    color_jitter_contrast: 0.3
+    color_jitter_saturation: 0.3
+    color_jitter_hue: 0.0
+    color_jitter_prob: 0.3
+  val_transforms:
+    name: episodes-dataset_val
+    type: video
+    input_size: 336
+    rotation_prob: 0.0
+    h_flip_prob: 0.0
+    color_jitter_brightness: 0.0
+    color_jitter_contrast: 0.0
+    color_jitter_saturation: 0.0
+    color_jitter_hue: 0.0
+    color_jitter_prob: 0.0
+    num_classes: ${globals.NUM_CLASSES}
+
+# Include all per-class metrics for detailed analysis
+val_metrics:
+  # Standard metrics
+  ari:
+    name: VideoARI
+    ignore_background: true
+    pred_key: decoder_masks_hard
+    true_key: segmentations
+  
+  image_ari:
+    name: ImageARI
+    ignore_background: true
+    video_input: true
+    pred_key: decoder_masks_hard
+    true_key: segmentations
+  
+  mbo:
+    name: VideoIoU
+    matching: overlap
+    ignore_background: true
+    pred_key: decoder_masks_hard
+    true_key: segmentations
+  
+  image_mbo:
+    name: ImageIoU
+    matching: overlap
+    ignore_background: true
+    video_input: true
+    pred_key: decoder_masks_hard
+    true_key: segmentations
+  
+  miou:
+    name: VideoIoU
+    matching: hungarian
+    ignore_background: true
+    pred_key: decoder_masks_hard
+    true_key: segmentations
+  
+  image_miou:
+    name: ImageIoU
+    matching: hungarian
+    ignore_background: true
+    video_input: true
+    pred_key: decoder_masks_hard
+    true_key: segmentations
+
+  # Per-class metrics - track performance per object class
+  per_class_mbo:
+    name: VideoPerClassIoU
+    matching: overlap
+    ignore_background: true
+    pred_key: decoder_masks_hard
+    true_key: segmentations
+    max_classes: ${globals.NUM_CLASSES}
+  
+  image_per_class_mbo:
+    name: ImagePerClassIoU
+    matching: overlap
+    ignore_background: true
+    video_input: true
+    pred_key: decoder_masks_hard
+    true_key: segmentations
+    max_classes: ${globals.NUM_CLASSES}
+  
+  per_class_miou:
+    name: VideoPerClassIoU
+    matching: hungarian
+    ignore_background: true
+    pred_key: decoder_masks_hard
+    true_key: segmentations
+    max_classes: ${globals.NUM_CLASSES}
+  
+  image_per_class_miou:
+    name: ImagePerClassIoU
+    matching: hungarian
+    ignore_background: true
+    video_input: true
+    pred_key: decoder_masks_hard
+    true_key: segmentations
+    max_classes: ${globals.NUM_CLASSES}
+
+# Disable visualization during validation for speed
+model:
+  visualize: false

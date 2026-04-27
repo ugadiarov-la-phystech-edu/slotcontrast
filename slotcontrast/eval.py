@@ -134,6 +134,8 @@ def main(args, config_overrides=None):
         val_metrics = {name: metrics.build(config) for name, config in config.val_metrics.items()}
     else:
         raise ValueError("Eval metric should be validation metrics")
+    
+    dataset.setup(stage='validate')
 
     model = models.build(config.model, config.optimizer, train_metrics, val_metrics)
     if config.model.load_weights is not None:

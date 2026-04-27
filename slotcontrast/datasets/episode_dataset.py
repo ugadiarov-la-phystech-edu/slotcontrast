@@ -41,6 +41,10 @@ class EpisodesDataset(Dataset):
         self.has_masks = os.path.isdir(masks_root)
         self.masks_root = masks_root if self.has_masks else None
         self.mask_extension = mask_extension
+        
+        self.episode_class_labels = {}  # Dict mapping episode_name 
+        if self.has_masks:
+            self.episode_class_labels = self._load_episode_class_labels(masks_root)
 
         self.mode = mode
         self.extension = extension
@@ -76,6 +80,24 @@ class EpisodesDataset(Dataset):
 
         print(f'Dataset indexing took {time.time() - start} seconds')
 
+    def _load_episode_class_labels(self, masks_root):
+        """Load seg_labels.npy from each episode folder.
+        
+        Returns dict mapping episode_name -> {instance_id: class_name}
+        """
+        episode_class_labels = {}
+        
+        for episode_folder in sorted(os.listdir(masks_root)):
+            episode_path = os.path.join(masks_root, episode_folder)
+            if not os.path.isdir(episode_path):
+                continue
+            seg_labels_path = os.path.join(episode_path, 'seg_labels.npy')
+            if os.path.exists(seg_labels_path):
+                labels = np.load(seg_labels_path, allow_pickle=True).item()
+                episode_class_labels[episode_folder] = labels
+        
+        return episode_class_labels
+    
     def _load_mask(self, image_path):
         """Load a dense segmentation mask corresponding to an image path.
 
@@ -93,8 +115,11 @@ class EpisodesDataset(Dataset):
         return mask
 
     def __getitem__(self, index):
+        episode_name = None
         if self.kind == 'video':
             episode_images = self.episode_images[index]
+            # Extract episode name from first image path
+            episode_name = os.path.basename(os.path.dirname(episode_images[0]))
             start_index = np.random.randint(0, len(episode_images) - self.sequence_length + 1)
             image_sequence = []
             mask_sequence = []
@@ -110,9 +135,11 @@ class EpisodesDataset(Dataset):
             # Implement continuous indexing
             offset = self.episode2offset[ep]
             in_episode_index = index - offset
-            data = np.array(Image.open(self.episode_images[ep][in_episode_index]))
+            image_path = self.episode_images[ep][in_episode_index]
+            episode_name = os.path.basename(os.path.dirname(image_path))
+            data = np.array(Image.open(image_path))
             if self.has_masks:
-                mask_sequence = [self._load_mask(self.episode_images[ep][in_episode_index])]
+                mask_sequence = [self._load_mask(image_path)]
         else:
             assert False, 'Cannot happen!'
 
@@ -125,6 +152,7 @@ class EpisodesDataset(Dataset):
             if self.kind == 'image':
                 masks = masks[0]
             data['segmentations'] = masks[..., np.newaxis]
+            data['class_labels'] = self.episode_class_labels.get(episode_name, {})
 
         if self.transforms:
             for name, transform in self.transforms.items():

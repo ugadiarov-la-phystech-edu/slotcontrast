@@ -17,6 +17,40 @@ from slotcontrast.data.utils import get_data_root_dir, worker_init_function
 from slotcontrast.utils import config_as_kwargs
 
 
+def pad_masks_collate_fn(batch, num_classes):
+    """Custom collate function that pads masks to have the same number of classes."""
+    if not batch:
+        return batch
+    
+    def _pad_mask(mask, num_classes):
+        current_classes = mask.shape[-3]
+        if current_classes < num_classes:
+            pad_size = num_classes - current_classes
+            padding = (0, 0, 0, 0, 0, pad_size)
+            return torch.nn.functional.pad(mask, padding, mode='constant', value=0)
+        return mask
+    
+    mask_keys = {k for k in batch[0].keys() if 'mask' in k.lower() or 'segment' in k.lower()}
+    class_labels = []
+    
+    padded_batch = []
+    for sample in batch:
+        padded_sample = {}
+        for key, value in sample.items():
+            if key == 'class_labels':
+                class_labels.append(value)
+            elif key in mask_keys and isinstance(value, torch.Tensor):
+                padded_sample[key] = _pad_mask(value, num_classes)
+            else:
+                padded_sample[key] = value
+        padded_batch.append(padded_sample)
+    
+    result = torch_collate.default_collate(padded_batch)
+    if class_labels:
+        result['class_labels'] = class_labels
+    return result
+
+
 def build(config, name: Optional[str] = "WebdatasetDataModule", data_dir: Optional[str] = None):
     name = config.get("name") or name
     if name == "WebdatasetDataModule":
@@ -636,6 +670,7 @@ class EpisodesDataModule(pl.LightningDataModule):
         train_transforms: Optional[Callable] = None,
         val_transforms: Optional[Callable] = None,
         mask_type: Optional[str] = None,
+        num_classes: Optional[int] = None,
     ):
         super().__init__()
         self.root = root
@@ -647,6 +682,7 @@ class EpisodesDataModule(pl.LightningDataModule):
         self.train_transforms = train_transforms
         self.val_transforms = val_transforms
         self.mask_type = mask_type
+        self.num_classes = num_classes
         self.train_set = None
         self.val_set = None
 
@@ -667,9 +703,25 @@ class EpisodesDataModule(pl.LightningDataModule):
                                        self.sequence_length, mask_type=self.mask_type)
 
     def train_dataloader(self):
-        return torch.utils.data.DataLoader(self.train_set, batch_size=self.train_batch_size, num_workers=self.num_workers,
-                                           shuffle=True)
+        collate_fn = None
+        if self.num_classes is not None:
+            collate_fn = partial(pad_masks_collate_fn, num_classes=self.num_classes)
+        return torch.utils.data.DataLoader(
+            self.train_set,
+            batch_size=self.train_batch_size,
+            num_workers=self.num_workers,
+            shuffle=True,
+            collate_fn=collate_fn
+        )
 
     def val_dataloader(self):
-        return torch.utils.data.DataLoader(self.val_set, batch_size=self.val_batch_size, num_workers=self.num_workers,
-                                           shuffle=True)
+        collate_fn = None
+        if self.num_classes is not None:
+            collate_fn = partial(pad_masks_collate_fn, num_classes=self.num_classes)
+        return torch.utils.data.DataLoader(
+            self.val_set,
+            batch_size=self.val_batch_size,
+            num_workers=self.num_workers,
+            shuffle=False,
+            collate_fn=collate_fn
+        )

@@ -1,4 +1,5 @@
 import math
+import os
 from typing import Dict, Optional, Sequence, Tuple
 
 import einops
@@ -6,13 +7,31 @@ import numpy as np
 import torch
 import torchmetrics
 
-from slotcontrast.utils import make_build_fn
+from slotcontrast import utils
 
 
-@make_build_fn(__name__, "metric")
-def build(config, name: str):
-    pass  # No special module building needed
+def build(config, **kwargs):
 
+    if config is None:
+        raise ValueError("No config specified while building metric")
+    
+    name = config.get("name")
+    if name is None:
+        raise ValueError("No name specified in metric config")
+    
+    # Get the metric class by name from this module
+    metric_cls = utils.get_class_by_name(__name__, name)
+    if metric_cls is None:
+        raise ValueError(f"Unknown metric '{name}'")
+    
+    # Build metric with config parameters
+    metric_kwargs = utils.config_as_kwargs(config)
+    metric_kwargs.update(kwargs)
+    
+    return metric_cls(**metric_kwargs)
+
+
+METRIC_DTYPE = torch.float64
 
 def _resize_mask_spatial(mask: torch.Tensor, target_hw: Tuple[int, int]) -> torch.Tensor:
     """Resize mask tensor spatially with nearest interpolation while preserving dtype."""
@@ -23,10 +42,10 @@ def _resize_mask_spatial(mask: torch.Tensor, target_hw: Tuple[int, int]) -> torc
     if mask.ndim == 5:
         b, t, c, _, _ = mask.shape
         mask = einops.rearrange(mask, "b t c h w -> (b t) c h w")
-        mask = torch.nn.functional.interpolate(mask.to(torch.float32), size=target_hw, mode="nearest")
+        mask = torch.nn.functional.interpolate(mask.to(METRIC_DTYPE), size=target_hw, mode="nearest")
         mask = einops.rearrange(mask, "(b t) c h w -> b t c h w", b=b, t=t)
     elif mask.ndim == 4:
-        mask = torch.nn.functional.interpolate(mask.to(torch.float32), size=target_hw, mode="nearest")
+        mask = torch.nn.functional.interpolate(mask.to(METRIC_DTYPE), size=target_hw, mode="nearest")
     else:
         raise ValueError(f"Unsupported mask ndim for resizing: {mask.ndim}")
 
@@ -112,7 +131,7 @@ class ImageMaskMetricMixin:
 
         return pattern
 
-    def _update(self, true_mask: torch.Tensor, pred_mask: torch.Tensor):
+    def _update(self, true_mask: torch.Tensor, pred_mask: torch.Tensor, **kwargs):
         """Update metric.
 
         Args:
@@ -120,6 +139,7 @@ class ImageMaskMetricMixin:
                 width).
             pred_mask: One-hot predicted masks of shape (batch [, n_frames], n_pred_classes, height,
                 width).
+            **kwargs: Additional arguments to pass to parent (e.g., class_labels).
         """
         if self.video_input:
             _check_shape(
@@ -143,7 +163,7 @@ class ImageMaskMetricMixin:
         true_mask = einops.rearrange(true_mask, self.rearrange_pattern)
         pred_mask = einops.rearrange(pred_mask, self.rearrange_pattern)
 
-        return super()._update(true_mask, pred_mask)
+        return super()._update(true_mask, pred_mask, **kwargs)
 
 
 class VideoMaskMetricMixin:
@@ -202,13 +222,14 @@ class VideoMaskMetricMixin:
 
         return pattern
 
-    def _update(self, true_mask: torch.Tensor, pred_mask: torch.Tensor):
+    def _update(self, true_mask: torch.Tensor, pred_mask: torch.Tensor, **kwargs):
         """Update metric.
 
         Args:
             true_mask: Binary true masks of shape (batch, n_frames, n_true_classes, height, width).
             pred_mask: One-hot predicted masks of shape (batch, n_frames, n_pred_classes, height,
                 width).
+            **kwargs: Additional arguments to pass to parent (e.g., class_labels).
         """
         _check_shape(
             true_mask,
@@ -225,7 +246,7 @@ class VideoMaskMetricMixin:
         true_mask = einops.rearrange(true_mask, self.rearrange_pattern)
         pred_mask = einops.rearrange(pred_mask, self.rearrange_pattern)
 
-        return super()._update(true_mask, pred_mask)
+        return super()._update(true_mask, pred_mask, **kwargs)
 
 
 class AdjustedRandIndex(Metric):
@@ -245,7 +266,7 @@ class AdjustedRandIndex(Metric):
         self.ignore_background = ignore_background
         self.ignore_overlaps = ignore_overlaps
         self.add_state(
-            "values", default=torch.tensor(0.0, dtype=torch.float64), dist_reduce_fx="sum"
+            "values", default=torch.tensor(0.0, dtype=METRIC_DTYPE), dist_reduce_fx="sum"
         )
         self.add_state("total", default=torch.tensor(0), dist_reduce_fx="sum")
 
@@ -360,7 +381,7 @@ def adjusted_rand_index(
     Returns:
         ARI scores as a tensor of shape (batch_size,).
     """
-    N = torch.einsum("bpc, bpk -> bck", true_mask.to(torch.float64), pred_mask.to(torch.float64))
+    N = torch.einsum("bpc, bpk -> bck", true_mask.to(METRIC_DTYPE), pred_mask.to(METRIC_DTYPE))
     A = torch.sum(N, axis=-1)  # row-sum  (batch_size, c)
     B = torch.sum(N, axis=-2)  # col-sum  (batch_size, k)
     num_points = torch.sum(A, axis=1)
@@ -403,7 +424,7 @@ class IntersectionOverUnion(Metric):
         if matching not in ("none", "overlap", "hungarian"):
             raise ValueError("`matching` needs to be 'none' or 'overlap' or 'hungarian'")
         self.add_state(
-            "values", default=torch.tensor(0.0, dtype=torch.float64), dist_reduce_fx="sum"
+            "values", default=torch.tensor(0.0, dtype=METRIC_DTYPE), dist_reduce_fx="sum"
         )
         self.add_state("total", default=torch.tensor(0), dist_reduce_fx="sum")
 
@@ -557,7 +578,7 @@ def intersection_over_union_with_matching(
     elif matching == "hungarian":
         all_true_idxs, all_pred_idxs = hungarian_matching(pairwise_ious, maximize=True)
         ious = torch.zeros(
-            true_mask.shape[0], true_mask.shape[2], dtype=torch.float64, device=pairwise_ious.device
+            true_mask.shape[0], true_mask.shape[2], dtype=METRIC_DTYPE, device=pairwise_ious.device
         )
         for idx, (true_idxs, pred_idxs) in enumerate(zip(all_true_idxs, all_pred_idxs)):
             ious[idx, true_idxs] = pairwise_ious[idx, true_idxs, pred_idxs]
@@ -608,8 +629,8 @@ def confusion_matrix(true_mask: torch.Tensor, pred_mask: torch.Tensor):
         Tuple containing the pairwise true positives (intersection), false positives and false
         negatives, all of shape (batch_size, n_true_classes, n_pred_classes).
     """
-    true_mask = true_mask.to(torch.float64)
-    pred_mask = pred_mask.to(torch.float64)
+    true_mask = true_mask.to(METRIC_DTYPE)
+    pred_mask = pred_mask.to(METRIC_DTYPE)
 
     true_positives = torch.einsum("bpc, bpk -> bck", true_mask, pred_mask)  # B x C x K
     n_true_points = true_mask.sum(1)  # B x C
@@ -649,13 +670,13 @@ class JandFMetric(Metric):
             )
         self.metric_for_matching = metric_for_matching
         self.add_state(
-            "j_and_f", default=torch.tensor(0.0, dtype=torch.float64), dist_reduce_fx="sum"
+            "j_and_f", default=torch.tensor(0.0, dtype=METRIC_DTYPE), dist_reduce_fx="sum"
         )
         self.add_state(
-            "jaccard", default=torch.tensor(0.0, dtype=torch.float64), dist_reduce_fx="sum"
+            "jaccard", default=torch.tensor(0.0, dtype=METRIC_DTYPE), dist_reduce_fx="sum"
         )
         self.add_state(
-            "f_measure", default=torch.tensor(0.0, dtype=torch.float64), dist_reduce_fx="sum"
+            "f_measure", default=torch.tensor(0.0, dtype=METRIC_DTYPE), dist_reduce_fx="sum"
         )
         self.add_state("total", default=torch.tensor(0), dist_reduce_fx="sum")
 
@@ -674,7 +695,7 @@ class JandFMetric(Metric):
             of true masks without any active mask, containing the mean metric value per sample.
         """
         values = torch.zeros(
-            pairwise_values.shape[:2], dtype=torch.float64, device=pairwise_values.device
+            pairwise_values.shape[:2], dtype=METRIC_DTYPE, device=pairwise_values.device
         )
         for idx, (t, p) in enumerate(zip(true_idxs, pred_idxs)):
             values[idx, t] = pairwise_values[idx, t, p]
@@ -1001,3 +1022,277 @@ def _check_shape(x: torch.Tensor, expected_shape: Sequence[Optional[int]], name:
         j is not None and i != j for i, j in zip(shape, expected_shape)
     ):
         raise ValueError(f"Input {name} has shape {shape}, but expected {expected_shape}.")
+
+
+class PerClassIoU(Metric):
+    """IoU metric that returns separate values for each class.
+    
+    Supports two modes:
+    1. Class mode (default): For class masks where index i always represents the same class
+    2. Instance mode: For instance masks where indices have per-episode semantics.
+       Activated when class_labels_key is provided in batch data.
+    """
+
+    higher_is_better = True
+    full_state_update = False
+
+    def __init__(
+        self,
+        ignore_background: bool = False,
+        ignore_overlaps: bool = False,
+        matching: str = "none",
+        pred_key: Optional[str] = None,
+        true_key: Optional[str] = None,
+        class_labels_key: Optional[str] = "class_labels",
+        max_classes: int = 20,
+    ):
+        input_mapping = {"pred_mask": pred_key, "true_mask": true_key}
+        if class_labels_key:
+            input_mapping["class_labels"] = class_labels_key
+        super().__init__(input_mapping=input_mapping)
+        self.ignore_background = ignore_background
+        self.ignore_overlaps = ignore_overlaps
+        self.matching = matching
+        self.max_classes = max_classes
+        self.class_labels_key = class_labels_key
+        if matching not in ("none", "overlap", "hungarian"):
+            raise ValueError("`matching` needs to be 'none' or 'overlap' or 'hungarian'")
+        
+        # Track IoU values for each class separately (class mode)
+        for class_idx in range(max_classes):
+            self.add_state(
+                f"class_{class_idx}_values",
+                default=torch.tensor(0.0, dtype=METRIC_DTYPE),
+                dist_reduce_fx="sum",
+            )
+            self.add_state(
+                f"class_{class_idx}_count",
+                default=torch.tensor(0),
+                dist_reduce_fx="sum",
+            )
+        
+        self._instance_mode_totals = {}
+        self._instance_mode_counts = {}
+
+    def _update(self, true_mask: torch.Tensor, pred_mask: torch.Tensor, class_labels=None):
+        """Update metric.
+
+        Args:
+            true_mask: Binary true masks of shape (batch, n_points, n_true_classes)
+            pred_mask: One-hot predicted masks of shape (batch, n_points, n_pred_classes)
+            class_labels: Optional list of dicts mapping instance_id -> class_name for instance mode
+        """
+        # Detect mode: if class_labels is provided, use instance mode
+        if class_labels is not None:
+            return self._update_instance_mode(true_mask, pred_mask, class_labels)
+        else:
+            return self._update_class_mode(true_mask, pred_mask)
+    
+    def _update_class_mode(self, true_mask: torch.Tensor, pred_mask: torch.Tensor):
+        """Update metric in class mode.
+        
+        For class masks where index i always represents the same class across all episodes.
+        """
+        assert true_mask.ndim == 3
+        assert pred_mask.ndim == 3
+        if torch.any((true_mask != 0.0) & (true_mask != 1.0)):
+            raise ValueError("`true_mask` is not binary")
+        if torch.any((pred_mask != 0.0) & (pred_mask != 1.0)):
+            raise ValueError("`pred_mask` is not binary")
+        if torch.any(pred_mask.sum(dim=-1) != 1.0):
+            raise ValueError("`pred_mask` is not one-hot")
+
+        n_true_classes_per_point = true_mask.sum(dim=-1) # (batch, n_points)
+        if not self.ignore_overlaps and torch.any(n_true_classes_per_point > 1.0):
+            raise ValueError("There are overlaps in `true_mask`.")
+        if self.ignore_background and torch.any(n_true_classes_per_point != 1.0):
+            raise ValueError("`true_mask` is not one-hot")
+        if self.ignore_overlaps:
+            overlaps = n_true_classes_per_point > 1.0
+            true_mask = true_mask.clone()
+            true_mask[overlaps] = 0.0
+            pred_mask = pred_mask.clone()
+            pred_mask[overlaps] = 0.0
+
+        if self.ignore_background:
+            true_mask = true_mask[..., 1:]  # Remove the background mask
+
+        # Compute IoU for each class
+        values = intersection_over_union_with_matching(
+            true_mask, pred_mask, self.matching, empty_value=0.0
+        )  # shape: (batch, n_true_classes)
+        active_true_classes = true_mask.sum(dim=1) > 0  # shape: (batch, n_true_classes)
+
+        # Update per-class statistics
+        n_true_classes = values.shape[1]
+        for class_idx in range(min(n_true_classes, self.max_classes)):
+            class_values = values[:, class_idx]
+            class_active = active_true_classes[:, class_idx]
+            
+            # Only count samples where this class is present
+            valid_values = class_values[class_active]
+            
+            if len(valid_values) > 0:
+                class_values_state = getattr(self, f"class_{class_idx}_values")
+                class_count_state = getattr(self, f"class_{class_idx}_count")
+                class_values_state += valid_values.sum()
+                class_count_state += len(valid_values)
+    
+    def _update_instance_mode(self, true_mask: torch.Tensor, pred_mask: torch.Tensor, class_labels):
+        """Update metric in instance mode.
+        
+        For instance masks where indices have per-episode semantics. Groups instances
+        by semantic class name within each sample, then accumulates across samples.
+        
+        Args:
+            true_mask: Binary true masks of shape (batch, n_points, n_true_instances)
+            pred_mask: One-hot predicted masks of shape (batch, n_points, n_pred_instances)
+            class_labels: List of dicts (length=batch) mapping instance_id -> class_name
+        """
+        assert true_mask.ndim == 3
+        assert pred_mask.ndim == 3
+        if torch.any((true_mask != 0.0) & (true_mask != 1.0)):
+            raise ValueError("`true_mask` is not binary")
+        if torch.any((pred_mask != 0.0) & (pred_mask != 1.0)):
+            raise ValueError("`pred_mask` is not binary")
+        if torch.any(pred_mask.sum(dim=-1) != 1.0):
+            raise ValueError("`pred_mask` is not one-hot")
+
+        n_true_classes_per_point = true_mask.sum(dim=-1)
+        if not self.ignore_overlaps and torch.any(n_true_classes_per_point > 1.0):
+            raise ValueError("There are overlaps in `true_mask`.")
+        if self.ignore_background and torch.any(n_true_classes_per_point != 1.0):
+            raise ValueError("`true_mask` is not one-hot")
+        if self.ignore_overlaps:
+            overlaps = n_true_classes_per_point > 1.0
+            true_mask = true_mask.clone()
+            true_mask[overlaps] = 0.0
+            pred_mask = pred_mask.clone()
+            pred_mask[overlaps] = 0.0
+
+        # Compute pairwise IoU for all instances
+        values = intersection_over_union_with_matching(
+            true_mask, pred_mask, self.matching, empty_value=0.0
+        )  # shape: (batch, n_true_instances)
+        active_true_instances = true_mask.sum(dim=1) > 0  # shape: (batch, n_true_instances)
+        
+        # Process each sample in batch
+        for sample_idx in range(len(class_labels)):
+            sample_class_labels = class_labels[sample_idx]
+            if sample_class_labels is None:
+                continue
+            
+            # Group by class name
+            class_to_instances = {}
+            for instance_idx, class_name in sample_class_labels.items():
+                if self.ignore_background and (class_name == 'background' or instance_idx == 0):
+                    continue
+                if instance_idx >= values.shape[1]:
+                    continue
+                if not active_true_instances[sample_idx, instance_idx]:
+                    continue
+                    
+                if class_name not in class_to_instances:
+                    class_to_instances[class_name] = []
+                class_to_instances[class_name].append(instance_idx)
+            
+            # Average IoU within each class for this sample
+            for class_name, instance_indices in class_to_instances.items():
+                class_ious = values[sample_idx, instance_indices]
+                mean_iou = class_ious.mean()
+                
+                # Accumulate in instance mode storage
+                if class_name not in self._instance_mode_totals:
+                    self._instance_mode_totals[class_name] = 0.0
+                    self._instance_mode_counts[class_name] = 0
+                
+                self._instance_mode_totals[class_name] += mean_iou.item()
+                self._instance_mode_counts[class_name] += 1
+
+    def compute(self):
+        """Compute final per-class IoU metrics.
+        
+        Returns results from instance mode if any data was processed in that mode,
+        otherwise returns class mode results.
+        """
+        # If instance mode was used, return those results
+        if self._instance_mode_counts:
+            result = {}
+            for class_name, count in self._instance_mode_counts.items():
+                if count > 0:
+                    result[class_name] = self._instance_mode_totals[class_name] / count
+            return result
+        
+        # Otherwise return class mode results
+        result = {}
+        for class_idx in range(self.max_classes):
+            count = getattr(self, f"class_{class_idx}_count")
+            if count > 0:
+                values = getattr(self, f"class_{class_idx}_values")
+                key = f"class_{class_idx}"
+                result[key] = values / count
+        
+        return result
+
+
+class ImagePerClassIoU(ImageMaskMetricMixin, PerClassIoU):
+    """Per-class IoU metric for images.
+
+    Inputs to metric:
+        true_mask: Binary true masks of shape (batch [, n_frames], n_true_classes, height, width).
+        pred_mask: One-hot predicted masks of shape (batch [, n_frames], n_pred_classes, height, width).
+
+    Args:
+        video_input: If true, assumes additional frame dimension as input.
+        ignore_background: If true, assume first dimension of true masks is background to ignore.
+        ignore_overlaps: If true, ignore pixels from overlapping instances.
+        matching: How to match true classes to predicted classes. 
+        class_labels_key: Key in batch data containing per-episode class labels (for instance mode).
+        max_classes: Maximum number of classes to track separately (default 20).
+    """
+
+    def __init__(
+        self,
+        video_input: bool = False,
+        ignore_background: bool = False,
+        ignore_overlaps: bool = False,
+        matching: str = "none",
+        pred_key: Optional[str] = None,
+        true_key: Optional[str] = None,
+        class_labels_key: Optional[str] = "class_labels",
+        max_classes: int = 20,
+    ):
+        super().__init__(
+            video_input, ignore_background, ignore_overlaps, matching, pred_key, true_key, 
+            class_labels_key, max_classes
+        )
+
+
+class VideoPerClassIoU(VideoMaskMetricMixin, PerClassIoU):
+    """Per-class IoU metric for videos.
+
+    Inputs to metric:
+        true_mask: Binary true masks of shape (batch, n_frames, n_true_classes, height, width).
+        pred_mask: One-hot predicted masks of shape (batch, n_frames, n_pred_classes, height,
+            width).
+
+    Args:
+        ignore_background: If true, assume first dimension of true masks is background to ignore.
+        ignore_overlaps: If true, ignore pixels from overlapping instances.
+        matching: How to match true classes to predicted classes.
+        class_labels_key: Key in batch data containing per-episode class labels (for instance mode).
+        max_classes: Maximum number of classes to track separately (default 20).
+    """
+
+    def __init__(
+        self,
+        ignore_background: bool = False,
+        ignore_overlaps: bool = False,
+        matching: str = "none",
+        pred_key: Optional[str] = None,
+        true_key: Optional[str] = None,
+        class_labels_key: Optional[str] = "class_labels",
+        max_classes: int = 20,
+    ):
+        super().__init__(ignore_background, ignore_overlaps, matching, pred_key, true_key, 
+                         class_labels_key, max_classes)
