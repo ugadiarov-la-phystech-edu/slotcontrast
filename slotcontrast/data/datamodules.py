@@ -627,7 +627,7 @@ class DummyDataModule(pl.LightningDataModule):
 class EpisodesDataModule(pl.LightningDataModule):
     def __init__(
         self,
-        root: str,
+        source_root: str,
         extension: str,
         sequence_length: int,
         train_batch_size: int,
@@ -635,9 +635,11 @@ class EpisodesDataModule(pl.LightningDataModule):
         num_workers: int,
         train_transforms: Optional[Callable] = None,
         val_transforms: Optional[Callable] = None,
+        episode_folder_pattern: str = '*',
+        cache: bool = False,
     ):
         super().__init__()
-        self.root = root
+        self.source_root = source_root
         self.extension = extension
         self.sequence_length = sequence_length
         self.train_batch_size = train_batch_size
@@ -645,24 +647,28 @@ class EpisodesDataModule(pl.LightningDataModule):
         self.num_workers = num_workers
         self.train_transforms = train_transforms
         self.val_transforms = val_transforms
+        self.episode_folder_pattern = episode_folder_pattern
+        self.cache = cache
         self.train_set = None
         self.val_set = None
 
     def __str__(self) -> str:
         res = ["EpisodesDataModule"]
-        res.append(f"  - Root: {self.root}")
+        res.append(f"  - Root: {self.source_root}")
         res.append(f"  - Extension: {self.extension}")
         res.append(f"  - Sequence length: {self.sequence_length}")
         res.append(f"  - Train batch size: {self.train_batch_size}")
         res.append(f"  - Val batch size: {self.val_batch_size}")
         res.append(f"  - Num workers: {self.num_workers}")
+        res.append(f"  - Episode folder pattern: {self.episode_folder_pattern}")
+        res.append(f"  - Cache: {self.cache}")
         return "\n".join(res)
 
     def setup(self, stage):
-        self.train_set = EpisodesDataset(self.root, 'train', self.train_transforms, self.extension, 'video',
-                                         self.sequence_length)
-        self.val_set = EpisodesDataset(self.root, 'val', self.val_transforms, self.extension, 'video',
-                                       self.sequence_length)
+        self.train_set = EpisodesDataset(self.source_root, 'train', self.train_transforms, self.extension, 'video',
+                                         self.sequence_length, episode_folder_pattern=self.episode_folder_pattern, cache=self.cache)
+        self.val_set = EpisodesDataset(self.source_root, 'val', self.val_transforms, self.extension, 'video',
+                                       self.sequence_length, episode_folder_pattern=self.episode_folder_pattern, cache=self.cache)
 
     def train_dataloader(self):
         return torch.utils.data.DataLoader(self.train_set, batch_size=self.train_batch_size, num_workers=self.num_workers,

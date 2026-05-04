@@ -114,12 +114,14 @@ model:
 
 dataset:
   name: EpisodesDataModule
-  root: null
+  source_root: null
   extension: png
   sequence_length: 8
   train_batch_size: ${globals.BATCH_SIZE_PER_GPU}
   val_batch_size: 16
   num_workers: 8
+  episode_folder_pattern: *
+  cache: false
   train_transforms:
     name: episodes-dataset_train
     type: video

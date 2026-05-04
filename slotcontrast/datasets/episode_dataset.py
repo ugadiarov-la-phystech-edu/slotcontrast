@@ -11,10 +11,11 @@ ImageFile.LOAD_TRUNCATED_IMAGES = True
 
 
 class EpisodesDataset(Dataset):
-    def __init__(self, root, mode, transforms=None, extension='png', kind='video', sequence_length=1):
-        assert mode in ['train', 'val', 'valid', 'test']
-        if mode in ('valid', 'test'):
-            mode = 'val'
+    def __init__(self, source_root, split, transforms=None, extension='png', kind='video', sequence_length=1, episode_folder_pattern='*',
+                 cache=False):
+        assert split in ['train', 'val', 'valid', 'test']
+        if split in ('valid', 'test'):
+            split = 'val'
 
         assert kind in ('image', 'video'), f'Expected kind: image or video. Actual: {kind}'
         if kind == 'image':
@@ -24,46 +25,60 @@ class EpisodesDataset(Dataset):
         self.sequence_length = sequence_length
         self.transforms = transforms
 
-        root = os.path.join(root, mode)
-        root_with_obs = os.path.join(root, 'obs')
-        if os.path.isdir(root_with_obs):
-            self.root = root_with_obs
-        else:
-            self.root = root
-
-        self.mode = mode
+        self.source_root = os.path.join(source_root, split)
+        self.split = split
         self.extension = extension
+        self.cache = cache
+        self.episode_folder_pattern = episode_folder_pattern
 
         # Get all numbers
-        self.folders = []
+        self.episode_ids = []
         start = time.time()
-        for file in os.listdir(self.root):
-            try:
-                self.folders.append(file)
-            except ValueError:
-                continue
+        for path in glob.glob(os.path.join(self.source_root, self.episode_folder_pattern)):
+            if os.path.isdir(path):
+                self.episode_ids.append(os.path.relpath(path, start=self.source_root))
 
         def get_num(x):
-            parts = x.split('_')
+            path = Path(x)
+            name = path.parts[-1]
+            parts = name.split('_')
             num = parts[0] if len(parts) == 1 else parts[1]
-            return int(num)
+            if len(path.parts) == 1:
+                return int(num)
 
-        self.folders.sort(key=get_num)
+            return os.path.join(*path.parts[:-1]), int(num)
+
+        self.episode_ids.sort(key=get_num)
 
         self.episode_images = []
         self.episode2offset = [0]
         self.index2episode = []
-        for i, f in enumerate(self.folders):
-            dir_name = os.path.join(self.root, str(f))
+        for i, f in enumerate(self.episode_ids):
+            dir_name = os.path.join(self.source_root, f)
             paths = list(glob.glob(osp.join(dir_name, f'*.{self.extension}')))
             actual_length = len(paths)
-            get_file_id = lambda x: get_num(osp.splitext(osp.basename(x))[0])
+            get_file_id = lambda x: get_num(os.path.splitext(os.path.basename(x))[0])
             paths.sort(key=get_file_id)
             self.episode_images.append(paths)
             self.index2episode.extend([len(self.episode_images) - 1] * actual_length)
             self.episode2offset.append(self.episode2offset[-1] + actual_length)
 
         print(f'Dataset indexing took {time.time() - start} seconds')
+
+        if self.cache:
+            # read image files into episode_images as bytes
+            start = time.time()
+            episode_image_bytes = []
+            for paths in tqdm(self.episode_images, desc=f'Caching split: {self.split}'):
+                image_bytes = []
+                for path in paths:
+                    with open(path, 'rb') as f:
+                        image_bytes.append(io.BytesIO(f.read()))
+
+                episode_image_bytes.append(image_bytes)
+
+            self.episode_images = episode_image_bytes
+            print(f'Dataset caching took {time.time() - start} seconds')
 
     def __getitem__(self, index):
         if self.kind == 'video':
