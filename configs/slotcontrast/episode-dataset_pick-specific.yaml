@@ -122,6 +122,8 @@ dataset:
   num_workers: 8
   episode_folder_pattern: "*"
   cache: false
+  pin_memory: false
+  persistent_workers: false
   train_transforms:
     name: episodes-dataset_train
     type: video

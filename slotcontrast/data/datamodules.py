@@ -637,6 +637,8 @@ class EpisodesDataModule(pl.LightningDataModule):
         val_transforms: Optional[Callable] = None,
         episode_folder_pattern: str = '*',
         cache: bool = False,
+        pin_memory: bool = False,
+        persistent_workers: bool = False,
     ):
         super().__init__()
         self.source_root = source_root
@@ -651,6 +653,8 @@ class EpisodesDataModule(pl.LightningDataModule):
         self.cache = cache
         self.train_set = None
         self.val_set = None
+        self.pin_memory = pin_memory
+        self.persistent_workers = persistent_workers
 
     def __str__(self) -> str:
         res = ["EpisodesDataModule"]
@@ -672,8 +676,8 @@ class EpisodesDataModule(pl.LightningDataModule):
 
     def train_dataloader(self):
         return torch.utils.data.DataLoader(self.train_set, batch_size=self.train_batch_size, num_workers=self.num_workers,
-                                           shuffle=True)
+                                           shuffle=True, pin_memory=self.pin_memory, persistent_workers=self.persistent_workers)
 
     def val_dataloader(self):
         return torch.utils.data.DataLoader(self.val_set, batch_size=self.val_batch_size, num_workers=self.num_workers,
-                                           shuffle=True)
+                                           shuffle=True, pin_memory=self.pin_memory, persistent_workers=self.persistent_workers)
