@@ -154,3 +154,8 @@ dataset:
       type: video
       input_size: 336
       num_classes: 11
+
+comet:
+  project: null
+  run_name: null
+  run_id: null
