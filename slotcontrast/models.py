@@ -421,6 +421,22 @@ class ObjectCentricModel(pl.LightningModule):
         if image_decoder_masks_metrics_hard is not None:
             aux_outputs["image_decoder_masks_hard"] = image_decoder_masks_metrics_hard
 
+        # Slot decomposition: masks * per_slot_recons.
+        for decomp_key, out_dict in (
+            ("image_decoder_slot_decomposition", image_decoder_output),
+            ("decoder_slot_decomposition", outputs["decoder"]),
+        ):
+            if out_dict is None:
+                continue
+            raw_slot_recons = out_dict.get("slot_recons")
+            raw_masks = out_dict.get("masks")
+            if raw_slot_recons is None or raw_masks is None:
+                continue
+            if raw_slot_recons.shape[-3] != 3:
+                continue
+            # masks: [B,(F,)N,H,W], slot_recons: [B,(F,)N,C,H,W]
+            aux_outputs[decomp_key] = raw_masks.unsqueeze(-3) * raw_slot_recons
+
         if self.dynamics_predictor:
             dynamics_predictor_masks = outputs["decoder"].get("predicted_masks")
             (
@@ -518,6 +534,7 @@ class ObjectCentricModel(pl.LightningModule):
                 reconstruction=reconstruction
             )
             self._log_masks(aux_outputs, self.mask_keys_to_visualize, mode="train", inputs=batch[self.input_key], mix_with_source=True)
+            self._log_slot_decomposition(aux_outputs, mode="train")
 
         return total_loss
 
@@ -582,6 +599,7 @@ class ObjectCentricModel(pl.LightningModule):
                 reconstruction=reconstruction,
             )
             self._log_masks(aux_outputs, self.mask_keys_to_visualize + gt_mask_keys, mode="val", inputs=batch[self.input_key], mix_with_source=True)
+            self._log_slot_decomposition(aux_outputs, mode="val")
 
     def validation_epoch_end(self, outputs):
         if self.val_metrics:
@@ -715,6 +733,46 @@ class ObjectCentricModel(pl.LightningModule):
                     raise ValueError(
                         f"input_type should be 'image' or 'video', but got '{self.input_key}'"
                     )
+
+    def _log_slot_decomposition(
+        self,
+        aux_outputs: Dict[str, Any],
+        mode: str,
+        step: Optional[int] = None,
+        n_examples: int = 2,
+    ):
+        """Log per-slot masked reconstructions (masks * slot_recons)"""
+        if step is None:
+            step = self.trainer.global_step
+
+        for key in ("image_decoder_slot_decomposition", "decoder_slot_decomposition"):
+            if key not in aux_outputs:
+                continue
+            decomp = aux_outputs[key].detach().clamp(0, 1)
+            b = decomp.shape[0]
+            n_ex = min(n_examples, b)
+
+            if self.input_key == "video":
+                # decomp: [B, F, N_slots, C, H, W]
+                for i in range(n_ex):
+                    # -> [N_slots, F, C, H, W] so _log_video makes a row per slot
+                    slot_videos = decomp[i].permute(1, 0, 2, 3, 4)
+                    n_slots = slot_videos.shape[0]
+                    self._log_video(
+                        f"{mode}/{key}_{i}",
+                        slot_videos,
+                        global_step=step,
+                        n_examples=n_slots,
+                    )
+            else:
+                # decomp: [B, N_slots, C, H, W]
+                n_slots = decomp.shape[1]
+                self._log_images(
+                    f"{mode}/{key}",
+                    decomp[0],
+                    global_step=step,
+                    n_examples=n_slots,
+                )
 
     def _log_video(
         self,

@@ -161,7 +161,7 @@ class SpatialBroadcastDecoder(nn.Module):
         masks = torch.softmax(alpha, dim=1)
         recon = torch.sum(recons * masks, dim=1)
 
-        return {"reconstruction": recon, "masks": masks.squeeze(2)}
+        return {"reconstruction": recon, "masks": masks.squeeze(2), "slot_recons": recons}
 
 
 class SpatialBroadcastDecoderV2(nn.Module):
@@ -198,7 +198,11 @@ class SpatialBroadcastDecoderV2(nn.Module):
             masks = masks.clone()
             masks[:, -self.n_background_slots:] = 0
         masks = masks.softmax(dim=1)
-        return {"reconstruction": torch.sum(img_slots * masks, dim=1), "masks": masks.squeeze(dim=2)}
+        return {
+            "reconstruction": torch.sum(img_slots * masks, dim=1),
+            "masks": masks.squeeze(dim=2),
+            "slot_recons": img_slots,
+        }
 
 
 class SlotMixerDecoder(nn.Module):
