@@ -634,7 +634,7 @@ class ObjectCentricModel(pl.LightningModule):
         resizer = self.mask_resizers.get("source")
         if self.input_key == "video":
             video = torch.stack([denorm(video) for video in inputs])
-            video = resizer(video)
+            video = resizer(video, inputs)
             if reconstruction is not None:
                 if len(video.shape) == len(reconstruction.shape) + 1:
                     # batch dimension is flatten in reconstruction
@@ -643,7 +643,7 @@ class ObjectCentricModel(pl.LightningModule):
                 elif len(video.shape) != len(reconstruction.shape):
                     raise ValueError(f'Unexpected shape of reconstruction: {reconstruction.shape}. Video shape: {video.shape}')
 
-                reconstruction = resizer(reconstruction)
+                reconstruction = resizer(reconstruction, inputs)
                 reconstruction = torch.stack([denorm(r) for r in reconstruction]).clamp(0, 1)
                 assert video.shape == reconstruction.shape, f'video.shape={video.shape} reconstruction.shape={reconstruction.shape}'
                 # Merge ground truth video and its reconstruction vertically
@@ -688,7 +688,7 @@ class ObjectCentricModel(pl.LightningModule):
         denorm = Denormalize(input_type=self.input_key)
         video = torch.stack([denorm(video) for video in inputs])
         resizer = self.mask_resizers.get("source")
-        video = resizer(video)
+        video = resizer(video, inputs)
         if step is None:
             step = self.trainer.global_step
         for mask_key in mask_keys:
