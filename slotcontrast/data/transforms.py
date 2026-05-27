@@ -108,7 +108,9 @@ def build(config):
         )
 
     input_transform.transforms.extend([resize_input, normalize])
-    if split == "val":
+
+    # Only for datasets where `num_classes` is fixed.
+    if split == "val" and config.get("num_classes") is not None:
         segmentation_transformation = tvt.Compose(
             [
                 ToTensorMask(),
@@ -187,6 +189,24 @@ def build(config):
     elif dataset == "episodes-dataset":
         if "target_size" in config:
             raise NotImplementedError("Separate targets not implemented for transform `episodes-dataset`")
+        if split == "val" and config.get("segmentation_id_map") is not None:
+            # Geometric augmentations must be off when loading segmentations.
+            assert not (h_flip_prob and h_flip_prob > 0), (
+                "Disable `h_flip_prob` in val transforms when loading segmentations."
+            )
+            assert not (rotation_prob and rotation_prob > 0), (
+                "Disable `rotation_prob` in val transforms when loading segmentations."
+            )
+            remap = RemapMask(config.segmentation_id_map)
+            num_classes = config.num_classes if config.get("num_classes") else remap.num_targets
+            transforms["segmentations"] = tvt.Compose(
+                [
+                    remap,
+                    ToTensorMask(),
+                    DenseToOneHotMask(num_classes=num_classes),
+                    resize_segmentation,
+                ]
+            )
     else:
         raise ValueError(f"Unknown dataset transforms module `{dataset}`")
     if dataset != "dummy":
@@ -546,6 +566,46 @@ class COCOToBinary:
         mask = torch.from_numpy(mask != 0).to(torch.bool)
         mask_binary[:num_obj] = mask
         return mask_binary
+
+
+class RemapMask:
+    """Remap source segmentation ids to target class ids, optionally merging several into one.
+
+    Built from a ``{target_id: [source_ids, ...]}`` mapping (e.g. ``{0: [1, 2, 4, 5, 6], 1: [3, 9, 10]}``).
+    Operates element-wise on a dense integer label map of any shape (uint8 or uint16),
+    preserving the shape (incl. a trailing singleton channel
+    so a following ``ToTensorMask`` still sees ``shape[-1] == 1``).
+
+    Source ids not present in the mapping raise a ``ValueError`` -- the mapping must be exhaustive
+    over the ids that actually appear in the masks.
+    """
+
+    def __init__(self, id_map: Dict):
+        source_to_target = {}
+        for target, sources in id_map.items():
+            for source in sources:
+                source_to_target[int(source)] = int(target)
+        if not source_to_target:
+            raise ValueError("`segmentation_id_map` is empty")
+
+        self.num_targets = max(source_to_target.values()) + 1
+        max_source = max(source_to_target)
+        # LUT initialised to -1 so that any unmapped (or out-of-range) id is detectable.
+        self._lut = np.full(max_source + 1, -1, dtype=np.int64)
+        for source, target in source_to_target.items():
+            self._lut[source] = target
+
+    def __call__(self, mask) -> np.ndarray:
+        mask = np.asarray(mask).astype(np.int64)
+        in_range = mask < len(self._lut)
+        remapped = np.where(in_range, self._lut[np.clip(mask, 0, len(self._lut) - 1)], -1)
+        if np.any(remapped < 0):
+            unmapped = sorted(np.unique(mask[remapped < 0]).tolist())
+            raise ValueError(
+                f"Segmentation ids {unmapped} are not covered by `segmentation_id_map`. "
+                "The mapping must be exhaustive over all ids present in the masks."
+            )
+        return remapped
 
 
 class DenseToOneHotMask:

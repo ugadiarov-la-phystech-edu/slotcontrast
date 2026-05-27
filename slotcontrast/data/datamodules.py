@@ -635,10 +635,15 @@ class EpisodesDataModule(pl.LightningDataModule):
         num_workers: int,
         train_transforms: Optional[Callable] = None,
         val_transforms: Optional[Callable] = None,
-        episode_folder_pattern: str = '*',
+        train_episode_folder_pattern: str = '*',
+        val_episode_folder_pattern: Optional[str] = None,
         cache: bool = False,
         pin_memory: bool = False,
         persistent_workers: bool = False,
+        with_segmentation: bool = False,
+        segmentation_folder: str = 'segmentation',
+        segmentation_extension: str = 'png',
+        val_shuffle: bool = True,
     ):
         super().__init__()
         self.source_root = source_root
@@ -649,12 +654,23 @@ class EpisodesDataModule(pl.LightningDataModule):
         self.num_workers = num_workers
         self.train_transforms = train_transforms
         self.val_transforms = val_transforms
-        self.episode_folder_pattern = episode_folder_pattern
+        self.train_episode_folder_pattern = train_episode_folder_pattern
+        self.val_episode_folder_pattern = val_episode_folder_pattern or train_episode_folder_pattern
         self.cache = cache
         self.train_set = None
         self.val_set = None
         self.pin_memory = pin_memory
         self.persistent_workers = persistent_workers
+        self.with_segmentation = with_segmentation
+        self.segmentation_folder = segmentation_folder
+        self.segmentation_extension = segmentation_extension
+        self.val_shuffle = val_shuffle
+
+        if with_segmentation and (val_transforms is None or 'segmentations' not in val_transforms):
+            raise ValueError(
+                "`with_segmentation=True` requires a `segmentation_id_map` in the val transforms "
+                "config (so masks can be remapped and one-hot encoded for metrics)."
+            )
 
     def __str__(self) -> str:
         res = ["EpisodesDataModule"]
@@ -664,15 +680,19 @@ class EpisodesDataModule(pl.LightningDataModule):
         res.append(f"  - Train batch size: {self.train_batch_size}")
         res.append(f"  - Val batch size: {self.val_batch_size}")
         res.append(f"  - Num workers: {self.num_workers}")
-        res.append(f"  - Episode folder pattern: {self.episode_folder_pattern}")
+        res.append(f"  - Episode folder pattern: {self.train_episode_folder_pattern}")
         res.append(f"  - Cache: {self.cache}")
+        res.append(f"  - With segmentation (val): {self.with_segmentation}")
+        res.append(f"  - Val shuffle: {self.val_shuffle}")
         return "\n".join(res)
 
     def setup(self, stage):
         self.train_set = EpisodesDataset(self.source_root, 'train', self.train_transforms, self.extension, 'video',
-                                         self.sequence_length, episode_folder_pattern=self.episode_folder_pattern, cache=self.cache)
+                                         self.sequence_length, episode_folder_pattern=self.train_episode_folder_pattern, cache=self.cache)
         self.val_set = EpisodesDataset(self.source_root, 'val', self.val_transforms, self.extension, 'video',
-                                       self.sequence_length, episode_folder_pattern=self.episode_folder_pattern, cache=self.cache)
+                                       self.sequence_length, episode_folder_pattern=self.val_episode_folder_pattern, cache=self.cache,
+                                       with_segmentation=self.with_segmentation, segmentation_folder=self.segmentation_folder,
+                                       segmentation_extension=self.segmentation_extension)
 
     def train_dataloader(self):
         return torch.utils.data.DataLoader(self.train_set, batch_size=self.train_batch_size, num_workers=self.num_workers,
@@ -680,4 +700,4 @@ class EpisodesDataModule(pl.LightningDataModule):
 
     def val_dataloader(self):
         return torch.utils.data.DataLoader(self.val_set, batch_size=self.val_batch_size, num_workers=self.num_workers,
-                                           shuffle=True, pin_memory=self.pin_memory, persistent_workers=self.persistent_workers)
+                                           shuffle=self.val_shuffle, pin_memory=self.pin_memory, persistent_workers=self.persistent_workers)

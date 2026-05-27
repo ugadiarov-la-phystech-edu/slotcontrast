@@ -220,7 +220,10 @@ class Resizer:
         self.resize_mode = resize_mode
 
     def __call__(
-        self, inputs: torch.Tensor, size_tensor: Optional[torch.Tensor] = None
+        self,
+        inputs: torch.Tensor,
+        size_tensor: Optional[torch.Tensor] = None,
+        use_size_tensor: bool = False,
     ) -> torch.Tensor:
         if inputs.ndim != self.n_expected_dims:
             raise ValueError(
@@ -228,7 +231,10 @@ class Resizer:
                 f"have {self.n_expected_dims} dimensions."
             )
 
-        if self.size is None:
+        # `use_size_tensor` forces resizing to the size of `size_tensor` even when a fixed `size`
+        # was configured. The metrics path uses it so masks always match the ground-truth
+        # resolution, regardless of any `visualization_size` baked into this resizer.
+        if self.size is None or use_size_tensor:
             if size_tensor is None:
                 raise ValueError("If size is unspecified, need to pass a tensor to take size from")
             size = size_tensor.shape[-2:]

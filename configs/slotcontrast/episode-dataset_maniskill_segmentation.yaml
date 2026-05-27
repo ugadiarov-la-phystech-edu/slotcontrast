@@ -1,8 +1,8 @@
 experiment_group: slotcontrast
-experiment_name: pick-specific
+experiment_name: maniskill
 
 globals:
-  NUM_SLOTS: 8
+  NUM_SLOTS: 3
   SLOT_DIM: 64
   DINO_MODEL: vit_small_patch14_dinov2
   FEAT_DIM: 384
@@ -31,7 +31,7 @@ model:
   visualize: true
   visualize_every_n_steps: 99999999999
   visualization_size: [128, 128]
-  masks_to_visualize: [decoder_masks,decoder_masks_vis_hard,grouping_masks,grouping_masks_vis_hard,image_decoder_masks,image_decoder_masks_vis_hard]
+  masks_to_visualize: [decoder_masks,decoder_masks_vis_hard,grouping_masks,grouping_masks_vis_hard]
   losses:
     loss_featrec:
       name: MSELoss
@@ -45,18 +45,12 @@ model:
       batch_contrast: true
       patch_inputs: false
       keep_input_dim: true
-    loss_image_reconstruction:
-      name: MSELoss
-      pred_key: image_decoder.reconstruction
-      target_key: image_decoder.source
-      video_inputs: true
-      patch_inputs: false
-      keep_input_dim: true
+    loss_image_reconstruction: null
 
   loss_weights:
     loss_featrec: 1.0
-    loss_ss: 0.5
-    loss_image_reconstruction: 1.0
+    loss_ss: 0.0
+    loss_image_reconstruction: null
 
   initializer:
     name: FixedLearnedInit
@@ -99,31 +93,57 @@ model:
     hidden_dims: [1024, 1024, 1024]
     n_patches: ${globals.NUM_PATCHES}
 
-  image_decoder:
-    name: SpatialBroadcastDecoderV2
-    inp_dim: ${globals.SLOT_DIM}
-    outp_dim: 3
-    hidden_size: 128
-    image_size: 128
-
   predictor:
     name: networks.TransformerEncoder
     dim: ${globals.SLOT_DIM}
     n_blocks: 1
     n_heads: 4
 
+# Validation segmentation metrics. The ground-truth masks come from the per-episode
+# `segmentation/` folders (dense single-channel PNGs), remapped + one-hot encoded by the
+# dataset (see `dataset.val_transforms.segmentation_id_map`). Background is class 0.
+val_metrics:
+  ari:
+    name: VideoARI
+    ignore_background: true
+    pred_key: decoder_masks_hard
+    true_key: segmentations
+  image_ari:
+    name: ImageARI
+    ignore_background: true
+    video_input: true
+    pred_key: decoder_masks_hard
+    true_key: segmentations
+  mbo:
+    name: VideoIoU
+    matching: overlap
+    ignore_background: true
+    pred_key: decoder_masks_hard
+    true_key: segmentations
+  image_mbo:
+    name: ImageIoU
+    matching: overlap
+    ignore_background: true
+    video_input: true
+    pred_key: decoder_masks_hard
+    true_key: segmentations
+
 dataset:
   name: EpisodesDataModule
   source_root: null
-  extension: png
-  sequence_length: 8
+  extension: JPEG
+  sequence_length: 4
   train_batch_size: ${globals.BATCH_SIZE_PER_GPU}
-  val_batch_size: 16
+  val_batch_size: 4
   num_workers: 8
   train_episode_folder_pattern: "*"
   cache: false
   pin_memory: false
   persistent_workers: false
+  # Load ground-truth segmentation for the val split only (train has none).
+  with_segmentation: true
+  segmentation_folder: segmentation
+  segmentation_extension: png
   train_transforms:
     name: episodes-dataset_train
     type: video
@@ -134,9 +154,23 @@ dataset:
     name: episodes-dataset_val
     type: video
     input_size: 336
+    # Augmentations must be off when loading segmentations (they are applied to the
+    # video only and would desync the masks).
     rotation_prob: 0.0
-    h_flip_prob: 0.5
-    num_classes: 0
+    h_flip_prob: 0.0
+    # Remap source ids from val/info.json to contiguous target classes
+    # e.g. 0 = background/environment, 1 = robot (all panda links), 2 = cube
+    # `num_classes` is derived as max(target)+1 (here 3).
+    # Mapping must cover every id that appears.
+    segmentation_id_map:
+      # background
+      0: [16, 17]
+      # cube
+      1: [18]
+      # goal region
+      2: [19]
+      # robot
+      3: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
 
 comet:
   project: null

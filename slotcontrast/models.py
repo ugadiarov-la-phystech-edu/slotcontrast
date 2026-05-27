@@ -291,10 +291,15 @@ class ObjectCentricModel(pl.LightningModule):
             image_decoder_output = self.image_decoder(slots)
             image_decoder_output['reconstruction'] = image_decoder_output['reconstruction'].flatten(end_dim=1)
             size = image_decoder_output['reconstruction'].shape[-2:]
-            inputs['image_decoder'] = dict(source=nn.functional.interpolate(
+            # Store the (downsampled) reconstruction target on the output tree, where the loss
+            # finds it via `target_key: image_decoder.source` (Loss.get_target reads `outputs`
+            # before `inputs`). Writing it into `inputs['image_decoder']` instead used to collide
+            # with the `image_decoder` entry of `outputs` when both are splatted into
+            # `metric.update(**batch, **outputs, ...)`, breaking val metrics + image_decoder.
+            image_decoder_output['source'] = nn.functional.interpolate(
                 inputs['video'].flatten(end_dim=1), size=size, mode='bilinear'
-            ))
-            assert image_decoder_output['reconstruction'].shape == inputs['image_decoder']['source'].shape
+            )
+            assert image_decoder_output['reconstruction'].shape == image_decoder_output['source'].shape
 
         outputs = {
             "batch_size": batch_size,
@@ -335,7 +340,9 @@ class ObjectCentricModel(pl.LightningModule):
             masks_for_vis_hard = self.mask_soft_to_hard(masks_for_vis)
             target_masks = inputs.get("segmentations")
             if target_masks is not None and masks_for_vis.shape[-2:] != target_masks.shape[-2:]:
-                masks_for_metrics = resizer(masks, target_masks)
+                # Match the ground-truth resolution for metrics even if `resizer` carries a fixed
+                # `visualization_size` (which would otherwise be used for `masks_for_vis`).
+                masks_for_metrics = resizer(masks, target_masks, use_size_tensor=True)
                 masks_for_metrics_hard = self.mask_soft_to_hard(masks_for_metrics)
             else:
                 masks_for_metrics_hard = masks_for_vis_hard
@@ -716,7 +723,7 @@ class ObjectCentricModel(pl.LightningModule):
 
         for logger in loggers:
             if isinstance(logger, pl.loggers.CometLogger):
-                logger.experiment.log_image(name=f"{name}/images", image_data=make_grid(data, nrow=n_examples),
+                logger.experiment.log_image(name=f"{name}/images", image_data=make_grid(data, nrow=n_examples).detach().cpu(),
                                             step=global_step)
             else:
                 logger.experiment.add_image(f"{name}/images", make_grid(data, nrow=n_examples), global_step=global_step)
