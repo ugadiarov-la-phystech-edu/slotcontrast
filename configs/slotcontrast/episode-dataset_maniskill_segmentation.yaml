@@ -32,6 +32,7 @@ model:
   visualize_every_n_steps: 99999999999
   visualization_size: [128, 128]
   masks_to_visualize: [decoder_masks,decoder_masks_vis_hard,grouping_masks,grouping_masks_vis_hard]
+  compute_val_loss: true
   losses:
     loss_featrec:
       name: MSELoss
@@ -133,6 +134,7 @@ dataset:
   source_root: null
   extension: JPEG
   sequence_length: 4
+  val_mode: full_episode
   train_batch_size: ${globals.BATCH_SIZE_PER_GPU}
   val_batch_size: 4
   num_workers: 8
@@ -141,7 +143,7 @@ dataset:
   pin_memory: false
   persistent_workers: false
   # Load ground-truth segmentation for the val split only (train has none).
-  with_segmentation: true
+  val_with_segmentation: true
   segmentation_folder: segmentation
   segmentation_extension: png
   train_transforms:
@@ -154,16 +156,14 @@ dataset:
     name: episodes-dataset_val
     type: video
     input_size: 336
-    # Augmentations must be off when loading segmentations (they are applied to the
-    # video only and would desync the masks).
+    # Augmentations must be off when loading segmentations.
     rotation_prob: 0.0
     h_flip_prob: 0.0
     # Remap source ids from val/info.json to contiguous target classes
-    # e.g. 0 = background/environment, 1 = robot (all panda links), 2 = cube
-    # `num_classes` is derived as max(target)+1 (here 3).
+    # `num_classes` is derived as max(target)+1 (here 4).
     # Mapping must cover every id that appears.
     segmentation_id_map:
-      # background
+      # background must be 0
       0: [16, 17]
       # cube
       1: [18]

@@ -15,10 +15,13 @@ def build(config, name: str):
 
 
 class Metric(torchmetrics.Metric):
-    def __init__(self, input_mapping: Dict[str, str], **kwargs) -> None:
+    def __init__(self, input_mapping: Dict[str, str], mask_key: Optional[str] = None, **kwargs) -> None:
         super().__init__(**kwargs)
         # Mapping from parameter in _update to name in inputs dict
         self.input_mapping = input_mapping
+        # Optional batch key whose value (if present at update time) is forwarded to `_update`
+        # as `frame_padding_mask`. Lets metrics drop padded frames in full-episode validation.
+        self.mask_key = mask_key
 
     def update(self, *args, **kwargs):
         inputs = {}
@@ -31,6 +34,9 @@ class Metric(torchmetrics.Metric):
                     f"Available inputs are: {list(kwargs)}"
                 )
             inputs[mapped_key] = kwargs[input_key]
+
+        if self.mask_key is not None and kwargs.get(self.mask_key) is not None:
+            inputs["frame_padding_mask"] = kwargs[self.mask_key]
 
         return self._update(*args, **inputs)
 
@@ -93,7 +99,12 @@ class ImageMaskMetricMixin:
 
         return pattern
 
-    def _update(self, true_mask: torch.Tensor, pred_mask: torch.Tensor):
+    def _update(
+        self,
+        true_mask: torch.Tensor,
+        pred_mask: torch.Tensor,
+        frame_padding_mask: Optional[torch.Tensor] = None,
+    ):
         """Update metric.
 
         Args:
@@ -101,6 +112,9 @@ class ImageMaskMetricMixin:
                 width).
             pred_mask: One-hot predicted masks of shape (batch [, n_frames], n_pred_classes, height,
                 width).
+            frame_padding_mask: Optional bool tensor of shape (batch, n_frames) marking padded
+                frames (True = padded). Padded frames are dropped from the per-frame average.
+                Only honored for video inputs.
         """
         if self.video_input:
             _check_shape(
@@ -121,6 +135,12 @@ class ImageMaskMetricMixin:
 
         true_mask = einops.rearrange(true_mask, self.rearrange_pattern)
         pred_mask = einops.rearrange(pred_mask, self.rearrange_pattern)
+
+        if self.video_input and frame_padding_mask is not None:
+            # Each frame is one sample after rearrange; drop padded frames from the per-frame average.
+            valid = ~einops.rearrange(frame_padding_mask, "b t -> (b t)")
+            true_mask = true_mask[valid]
+            pred_mask = pred_mask[valid]
 
         return super()._update(true_mask, pred_mask)
 
@@ -181,13 +201,21 @@ class VideoMaskMetricMixin:
 
         return pattern
 
-    def _update(self, true_mask: torch.Tensor, pred_mask: torch.Tensor):
+    def _update(
+        self,
+        true_mask: torch.Tensor,
+        pred_mask: torch.Tensor,
+        frame_padding_mask: Optional[torch.Tensor] = None,
+    ):
         """Update metric.
 
         Args:
             true_mask: Binary true masks of shape (batch, n_frames, n_true_classes, height, width).
             pred_mask: One-hot predicted masks of shape (batch, n_frames, n_pred_classes, height,
                 width).
+            frame_padding_mask: Optional bool tensor of shape (batch, n_frames) marking padded
+                frames (True = padded). Padded frames are zeroed before the temporal fold so they
+                contribute no pixels to the per-video metric.
         """
         _check_shape(
             true_mask,
@@ -200,6 +228,10 @@ class VideoMaskMetricMixin:
             (b, t, None, h, w),
             "pred_mask [bs, n_frames, n_pred_classes, h, w]",
         )
+        if frame_padding_mask is not None:
+            valid = (~frame_padding_mask).to(true_mask.dtype)[:, :, None, None, None]
+            true_mask = true_mask * valid
+            pred_mask = pred_mask * valid.to(pred_mask.dtype)
         true_mask = einops.rearrange(true_mask, self.rearrange_pattern)
         pred_mask = einops.rearrange(pred_mask, self.rearrange_pattern)
 
@@ -219,7 +251,10 @@ class AdjustedRandIndex(Metric):
         pred_key: Optional[str] = None,
         true_key: Optional[str] = None,
     ):
-        super().__init__(input_mapping={"pred_mask": pred_key, "true_mask": true_key})
+        super().__init__(
+            input_mapping={"pred_mask": pred_key, "true_mask": true_key},
+            mask_key="frame_padding_mask",
+        )
         self.ignore_background = ignore_background
         self.ignore_overlaps = ignore_overlaps
         self.add_state(
@@ -240,13 +275,16 @@ class AdjustedRandIndex(Metric):
             raise ValueError("`true_mask` is not binary")
         if torch.any((pred_mask != 0.0) & (pred_mask != 1.0)):
             raise ValueError("`pred_mask` is not binary")
-        if torch.any(pred_mask.sum(dim=-1) != 1.0):
+        # `VideoMaskMetricMixin` zeros padded frames before folding (b t h w -> b (t h w)), so
+        # padded positions arrive here as all-zero rows. Allow them; only nonzero rows must be one-hot.
+        pred_sum_per_point = pred_mask.sum(dim=-1)
+        if torch.any((pred_sum_per_point != 0.0) & (pred_sum_per_point != 1.0)):
             raise ValueError("`pred_mask` is not one-hot")
 
         n_true_classes_per_point = true_mask.sum(dim=-1)
         if not self.ignore_overlaps and torch.any(n_true_classes_per_point > 1.0):
             raise ValueError("There are overlaps in `true_mask`.")
-        if self.ignore_background and torch.any(n_true_classes_per_point != 1.0):
+        if self.ignore_background and torch.any(n_true_classes_per_point > 1.0):
             raise ValueError("`true_mask` is not one-hot")
 
         if self.ignore_overlaps:
@@ -374,7 +412,10 @@ class IntersectionOverUnion(Metric):
         pred_key: Optional[str] = None,
         true_key: Optional[str] = None,
     ):
-        super().__init__(input_mapping={"pred_mask": pred_key, "true_mask": true_key})
+        super().__init__(
+            input_mapping={"pred_mask": pred_key, "true_mask": true_key},
+            mask_key="frame_padding_mask",
+        )
         self.ignore_background = ignore_background
         self.ignore_overlaps = ignore_overlaps
         self.matching = matching
@@ -398,13 +439,16 @@ class IntersectionOverUnion(Metric):
             raise ValueError("`true_mask` is not binary")
         if torch.any((pred_mask != 0.0) & (pred_mask != 1.0)):
             raise ValueError("`pred_mask` is not binary")
-        if torch.any(pred_mask.sum(dim=-1) != 1.0):
+        # `VideoMaskMetricMixin` zeros padded frames before folding (b t h w -> b (t h w)), so
+        # padded positions arrive here as all-zero rows. Allow them; only nonzero rows must be one-hot.
+        pred_sum_per_point = pred_mask.sum(dim=-1)
+        if torch.any((pred_sum_per_point != 0.0) & (pred_sum_per_point != 1.0)):
             raise ValueError("`pred_mask` is not one-hot")
 
         n_true_classes_per_point = true_mask.sum(dim=-1)
         if not self.ignore_overlaps and torch.any(n_true_classes_per_point > 1.0):
             raise ValueError("There are overlaps in `true_mask`.")
-        if self.ignore_background and torch.any(n_true_classes_per_point != 1.0):
+        if self.ignore_background and torch.any(n_true_classes_per_point > 1.0):
             raise ValueError("`true_mask` is not one-hot")
         if self.ignore_overlaps:
             overlaps = n_true_classes_per_point > 1.0
@@ -617,7 +661,10 @@ class JandFMetric(Metric):
         true_key: Optional[str] = None,
         metric_for_matching: str = "j_and_f",
     ):
-        super().__init__(input_mapping={"pred_mask": pred_key, "true_mask": true_key})
+        super().__init__(
+            input_mapping={"pred_mask": pred_key, "true_mask": true_key},
+            mask_key="frame_padding_mask",
+        )
         self.ignore_background = ignore_background
         self.ignore_overlaps = ignore_overlaps
         if metric_for_matching not in ("j_and_f", "jaccard", "f_measure"):
@@ -686,13 +733,15 @@ class JandFMetric(Metric):
             raise ValueError("`true_mask` is not binary")
         if torch.any((pred_mask != 0.0) & (pred_mask != 1.0)):
             raise ValueError("`pred_mask` is not binary")
-        if torch.any(pred_mask.sum(dim=2) != 1.0):
+        # `VideoMaskMetricMixin` zeros padded frames; allow zero rows, require one-hot elsewhere.
+        pred_sum_per_pixel = pred_mask.sum(dim=2)
+        if torch.any((pred_sum_per_pixel != 0.0) & (pred_sum_per_pixel != 1.0)):
             raise ValueError("`pred_mask` is not one-hot")
 
         n_true_classes_per_point = true_mask.sum(dim=2)
         if not self.ignore_overlaps and torch.any(n_true_classes_per_point > 1.0):
             raise ValueError("There are overlaps in `true_mask`.")
-        if self.ignore_background and torch.any(n_true_classes_per_point != 1.0):
+        if self.ignore_background and torch.any(n_true_classes_per_point > 1.0):
             raise ValueError("`true_mask` is not one-hot")
         if self.ignore_overlaps:
             overlaps = n_true_classes_per_point > 1.0

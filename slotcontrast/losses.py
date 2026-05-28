@@ -130,8 +130,28 @@ class Loss(nn.Module):
 
         return prediction
 
-    def forward(self, prediction: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+    def forward(self, prediction: torch.Tensor, target: torch.Tensor, **kwargs) -> torch.Tensor:
         raise NotImplementedError("Implement in subclasses")
+
+    def _expand_frame_mask_to_positions(
+        self, frame_padding_mask: torch.Tensor, n_positions: int
+    ) -> torch.Tensor:
+        """Broadcast a (B, T) padding mask to the canonical (B, n_positions) position mask.
+
+        Returns a float mask with 1.0 at valid positions and 0.0 at padded positions, with shape
+        ``(B, n_positions)``. Caller adds the final dim for broadcasting over feature/class dims.
+        """
+        if not self.video_inputs:
+            raise ValueError("frame_padding_mask is only supported with video_inputs=True.")
+        b, t = frame_padding_mask.shape
+        if n_positions % t != 0:
+            raise ValueError(
+                f"Cannot broadcast frame_padding_mask of shape (B={b}, T={t}) to {n_positions} "
+                f"canonical positions: not divisible by T."
+            )
+        per_frame = n_positions // t
+        valid = (~frame_padding_mask).to(torch.float32)
+        return valid[:, :, None].expand(b, t, per_frame).reshape(b, n_positions)
 
 
 class TorchLoss(Loss):
@@ -149,18 +169,41 @@ class TorchLoss(Loss):
         loss_kwargs = loss_kwargs if loss_kwargs is not None else {}
         if hasattr(torch.nn, loss):
             self.loss_fn = getattr(torch.nn, loss)(reduction="mean", **loss_kwargs)
+            try:
+                self.loss_fn_unreduced = getattr(torch.nn, loss)(reduction="none", **loss_kwargs)
+            except TypeError:
+                self.loss_fn_unreduced = None
         else:
             raise ValueError(f"Loss function torch.nn.{loss} not found")
 
         # Cross entropy loss wants dimension order (batch, classes, positions)
         self.positions_last = loss == "CrossEntropyLoss"
 
-    def forward(self, prediction: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self,
+        prediction: torch.Tensor,
+        target: torch.Tensor,
+        frame_padding_mask: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
         if self.positions_last:
             prediction = prediction.transpose(-2, -1)
             target = target.transpose(-2, -1)
 
-        return self.loss_fn(prediction, target)
+        if frame_padding_mask is not None and self.loss_fn_unreduced is None:
+            raise NotImplementedError(f"{self.loss_fn} does not support frame_padding_mask.")
+
+        if frame_padding_mask is None:
+            return self.loss_fn(prediction, target)
+
+        # Masked-mean over valid positions. Per-element loss has shape `(B, n_positions, D)` after
+        # canonicalization; build a `(B, n_positions, 1)` valid mask from the `(B, T)` frame mask.
+        per_element = self.loss_fn_unreduced(prediction, target)
+        b, n_pos, d = per_element.shape
+        valid = self._expand_frame_mask_to_positions(frame_padding_mask, n_pos).to(per_element.dtype)
+        valid = valid.to(per_element.device)[:, :, None]
+        weighted = per_element * valid
+        denom = valid.sum() * d
+        return weighted.sum() / denom.clamp(min=1)
 
 
 class MSELoss(TorchLoss):
@@ -187,7 +230,14 @@ class Slot_Slot_Contrastive_Loss(Loss):
         self.temperature = temperature
         self.batch_contrast = batch_contrast
 
-    def forward(self, slots, _):
+    def forward(self, slots, _, frame_padding_mask=None):
+        if frame_padding_mask is not None and self.batch_contrast:
+            # This case is not implemented yet.
+            raise NotImplementedError(
+                "Slot_Slot_Contrastive_Loss does not support full-episode padding when "
+                "`batch_contrast=True`. Use `batch_contrast=False` for full-episode validation, "
+                "or stay in subsequence mode."
+            )
         slots = nn.functional.normalize(slots, p=2.0, dim=-1)
         if self.batch_contrast:
             slots = slots.split(1)  # [1xTxKxD]
@@ -195,11 +245,26 @@ class Slot_Slot_Contrastive_Loss(Loss):
         s1 = slots[:, :-1, :, :]
         s2 = slots[:, 1:, :, :]
         ss = torch.matmul(s1, s2.transpose(-2, -1)) / self.temperature
-        B, T, S, D = ss.shape
+        B, T, S, _ = ss.shape
         ss = ss.reshape(B * T, S, S)
         target = torch.eye(S).expand(B * T, S, S).to(ss.device)
-        loss = self.criterion(ss, target)
-        return loss
+        if frame_padding_mask is None:
+            return self.criterion(ss, target)
+
+        # batch_contrast=False: each (video, pair) is its own contrastive item, so a per-video
+        # validity mask is exactly the right granularity. Drop pairs whose ends are not both real.
+        valid_per_frame = ~frame_padding_mask  # (B_orig, T_orig)
+        pair_valid = valid_per_frame[:, :-1] & valid_per_frame[:, 1:]  # (B_orig, T_orig-1)
+        pair_valid = pair_valid.reshape(-1).to(ss.device, dtype=ss.dtype)  # (B * T,)
+        if pair_valid.sum() == 0:
+            return ss.sum() * 0.0  # degenerate (e.g. T_i = 1): keep a zero connected to the graph
+
+        # `cross_entropy(..., reduction='none')` with input (N, C, d1) and class-prob target of
+        # the same shape returns (N, d1) — here (B*T, S). Match `reduction='mean'` semantics:
+        # average over (valid_pairs * S) elements, not just valid_pairs.
+        per_pair_loss = nn.functional.cross_entropy(ss, target, reduction="none")  # (B*T, S)
+        s_dim = per_pair_loss.shape[-1]
+        return (per_pair_loss * pair_valid[:, None]).sum() / (pair_valid.sum() * s_dim)
 
 
 class DynamicsLoss(Loss):
@@ -207,7 +272,7 @@ class DynamicsLoss(Loss):
         super().__init__(pred_key, target_key, **kwargs)
         self.criterion = nn.MSELoss()
 
-    def forward(self, prediction: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+    def forward(self, prediction: torch.Tensor, target: torch.Tensor, **kwargs) -> torch.Tensor:
         rollout_length = prediction.shape[1]
         target = target[:, -rollout_length:]
         loss = self.criterion(prediction, target)

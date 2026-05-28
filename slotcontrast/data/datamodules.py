@@ -640,12 +640,17 @@ class EpisodesDataModule(pl.LightningDataModule):
         cache: bool = False,
         pin_memory: bool = False,
         persistent_workers: bool = False,
-        with_segmentation: bool = False,
+        val_with_segmentation: bool = False,
         segmentation_folder: str = 'segmentation',
         segmentation_extension: str = 'png',
         val_shuffle: bool = True,
+        val_mode: str = 'subsequence',
     ):
         super().__init__()
+        if val_mode not in ('subsequence', 'full_episode'):
+            raise ValueError(
+                f"`val_mode` must be 'subsequence' or 'full_episode', got '{val_mode}'."
+            )
         self.source_root = source_root
         self.extension = extension
         self.sequence_length = sequence_length
@@ -661,14 +666,15 @@ class EpisodesDataModule(pl.LightningDataModule):
         self.val_set = None
         self.pin_memory = pin_memory
         self.persistent_workers = persistent_workers
-        self.with_segmentation = with_segmentation
+        self.val_with_segmentation = val_with_segmentation
         self.segmentation_folder = segmentation_folder
         self.segmentation_extension = segmentation_extension
         self.val_shuffle = val_shuffle
+        self.val_mode = val_mode
 
-        if with_segmentation and (val_transforms is None or 'segmentations' not in val_transforms):
+        if val_with_segmentation and (val_transforms is None or 'segmentations' not in val_transforms):
             raise ValueError(
-                "`with_segmentation=True` requires a `segmentation_id_map` in the val transforms "
+                "`val_with_segmentation=True` requires a `segmentation_id_map` in the val transforms "
                 "config (so masks can be remapped and one-hot encoded for metrics)."
             )
 
@@ -682,8 +688,9 @@ class EpisodesDataModule(pl.LightningDataModule):
         res.append(f"  - Num workers: {self.num_workers}")
         res.append(f"  - Episode folder pattern: {self.train_episode_folder_pattern}")
         res.append(f"  - Cache: {self.cache}")
-        res.append(f"  - With segmentation (val): {self.with_segmentation}")
+        res.append(f"  - With segmentation (val): {self.val_with_segmentation}")
         res.append(f"  - Val shuffle: {self.val_shuffle}")
+        res.append(f"  - Val mode: {self.val_mode}")
         return "\n".join(res)
 
     def setup(self, stage):
@@ -691,13 +698,56 @@ class EpisodesDataModule(pl.LightningDataModule):
                                          self.sequence_length, episode_folder_pattern=self.train_episode_folder_pattern, cache=self.cache)
         self.val_set = EpisodesDataset(self.source_root, 'val', self.val_transforms, self.extension, 'video',
                                        self.sequence_length, episode_folder_pattern=self.val_episode_folder_pattern, cache=self.cache,
-                                       with_segmentation=self.with_segmentation, segmentation_folder=self.segmentation_folder,
-                                       segmentation_extension=self.segmentation_extension)
+                                       val_with_segmentation=self.val_with_segmentation, segmentation_folder=self.segmentation_folder,
+                                       segmentation_extension=self.segmentation_extension,
+                                       full_episode=(self.val_mode == 'full_episode'))
 
     def train_dataloader(self):
         return torch.utils.data.DataLoader(self.train_set, batch_size=self.train_batch_size, num_workers=self.num_workers,
                                            shuffle=True, pin_memory=self.pin_memory, persistent_workers=self.persistent_workers)
 
     def val_dataloader(self):
+        collate_fn = _full_episode_collate if self.val_mode == 'full_episode' else None
         return torch.utils.data.DataLoader(self.val_set, batch_size=self.val_batch_size, num_workers=self.num_workers,
-                                           shuffle=self.val_shuffle, pin_memory=self.pin_memory, persistent_workers=self.persistent_workers)
+                                           shuffle=self.val_shuffle, pin_memory=self.pin_memory, persistent_workers=self.persistent_workers,
+                                           collate_fn=collate_fn)
+
+
+# Temporal-axis keys that `_full_episode_collate` will right-pad to the max T in the batch.
+_FULL_EPISODE_TEMPORAL_KEYS = ('video', 'segmentations')
+
+
+def _full_episode_collate(samples):
+    """Collate full-episode samples by right-padding the temporal dim to the batch max.
+
+    Adds a ``frame_padding_mask`` key of shape ``(B, T_max)`` where True marks padded frames.
+    Non-tensor keys (e.g. ``__key__``) are gathered into a list; tensor keys without a leading
+    temporal dim are stacked with the default collate.
+    """
+    batch: Dict[str, Any] = {}
+    sample_lengths = [s['video'].shape[0] for s in samples]
+    t_max = max(sample_lengths)
+
+    for key in samples[0].keys():
+        values = [s[key] for s in samples]
+        if key in _FULL_EPISODE_TEMPORAL_KEYS and isinstance(values[0], torch.Tensor):
+            padded = []
+            for v in values:
+                pad_len = t_max - v.shape[0]
+                if pad_len == 0:
+                    padded.append(v)
+                else:
+                    pad_shape = (pad_len,) + tuple(v.shape[1:])
+                    pad_tensor = torch.zeros(pad_shape, dtype=v.dtype)
+                    padded.append(torch.cat([v, pad_tensor], dim=0))
+            batch[key] = torch.stack(padded, dim=0)
+        elif isinstance(values[0], torch.Tensor):
+            batch[key] = torch.stack(values, dim=0)
+        else:
+            batch[key] = list(values)
+
+    padding_mask = torch.ones((len(samples), t_max), dtype=torch.bool)
+    for i, t in enumerate(sample_lengths):
+        padding_mask[i, :t] = False
+    batch['frame_padding_mask'] = padding_mask
+    return batch

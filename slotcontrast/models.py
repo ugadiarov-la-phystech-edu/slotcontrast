@@ -174,6 +174,7 @@ def build(
         visualize=model_config.get("visualize", False),
         visualize_every_n_steps=model_config.get("visualize_every_n_steps", 1000),
         masks_to_visualize=masks_to_visualize,
+        compute_val_loss=model_config.get("compute_val_loss", True),
     )
 
     if model_config.load_weights:
@@ -204,6 +205,7 @@ class ObjectCentricModel(pl.LightningModule):
         visualize: bool = False,
         visualize_every_n_steps: Optional[int] = None,
         masks_to_visualize: Union[str, List[str]] = "decoder_masks_vis_hard",
+        compute_val_loss: bool = True,
     ):
         super().__init__()
         self.optimizer_builder = optimizer_builder
@@ -242,6 +244,7 @@ class ObjectCentricModel(pl.LightningModule):
         if visualize:
             assert visualize_every_n_steps is not None
         self.visualize_every_n_steps = visualize_every_n_steps
+        self.compute_val_loss = compute_val_loss
         if isinstance(masks_to_visualize, str):
             masks_to_visualize = [masks_to_visualize]
         for key in masks_to_visualize:
@@ -425,12 +428,16 @@ class ObjectCentricModel(pl.LightningModule):
 
         return targets
 
-    def compute_loss(self, outputs: Dict[str, Any]) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
+    def compute_loss(
+        self,
+        outputs: Dict[str, Any],
+        frame_padding_mask: Optional[torch.Tensor] = None,
+    ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
         losses = {}
         for name, loss_fn in self.loss_fns.items():
             prediction = loss_fn.get_prediction(outputs)
             target = outputs["targets"][name]
-            losses[name] = loss_fn(prediction, target)
+            losses[name] = loss_fn(prediction, target, frame_padding_mask=frame_padding_mask)
 
         losses_weighted = [loss * self.loss_weights.get(name, 1.0) for name, loss in losses.items()]
         total_loss = torch.stack(losses_weighted).sum()
@@ -498,12 +505,16 @@ class ObjectCentricModel(pl.LightningModule):
         outputs = self.forward(batch)
         aux_outputs = self.aux_forward(batch, outputs)
 
-        total_loss, losses = self.compute_loss(outputs)
-        if len(losses) == 1:
-            to_log = {"val/loss": total_loss}  # Log only total loss if only one loss configured
+        frame_padding_mask = batch.get("frame_padding_mask")
+        if self.compute_val_loss:
+            total_loss, losses = self.compute_loss(outputs, frame_padding_mask=frame_padding_mask)
+            if len(losses) == 1:
+                to_log = {"val/loss": total_loss}  # Log only total loss if only one loss configured
+            else:
+                to_log = {f"val/{name}": loss for name, loss in losses.items()}
+                to_log["val/loss"] = total_loss
         else:
-            to_log = {f"val/{name}": loss for name, loss in losses.items()}
-            to_log["val/loss"] = total_loss
+            to_log = {}
 
         if self.dynamics_predictor:
             prediction_batch = deepcopy(batch)

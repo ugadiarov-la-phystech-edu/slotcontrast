@@ -26,6 +26,7 @@ class ModelConfig:
     target_type: str = "features"
     target_encoder_input: Optional[str] = None
     visualize: bool = False
+    compute_val_loss: bool = True
     visualization_size: Optional[Tuple[int, int]] = None
     eval_mode_config: Optional[Dict[str, Any]] = None
     visualize_every_n_steps: Optional[int] = 1000

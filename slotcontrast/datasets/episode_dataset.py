@@ -15,7 +15,8 @@ ImageFile.LOAD_TRUNCATED_IMAGES = True
 
 class EpisodesDataset(Dataset):
     def __init__(self, source_root, split, transforms=None, extension='png', kind='video', sequence_length=1, episode_folder_pattern='*',
-                 cache=False, with_segmentation=False, segmentation_folder='segmentation', segmentation_extension='png'):
+                 cache=False, val_with_segmentation=False, segmentation_folder='segmentation', segmentation_extension='png',
+                 full_episode=False):
         assert split in ['train', 'val', 'valid', 'test']
         if split in ('valid', 'test'):
             split = 'val'
@@ -23,11 +24,14 @@ class EpisodesDataset(Dataset):
         assert kind in ('image', 'video'), f'Expected kind: image or video. Actual: {kind}'
         if kind == 'image':
             assert sequence_length == 1, f'Expected sequence length: 1. Actual: {sequence_length}'
-        if with_segmentation:
+        if val_with_segmentation:
             assert kind == 'video', 'Segmentation loading is only supported for kind="video".'
+        if full_episode and kind != 'video':
+            raise ValueError('`full_episode=True` is only supported for kind="video".')
 
         self.kind = kind
         self.sequence_length = sequence_length
+        self.full_episode = full_episode
         self.transforms = transforms
 
         self.source_root = os.path.join(source_root, split)
@@ -35,7 +39,7 @@ class EpisodesDataset(Dataset):
         self.extension = extension
         self.cache = cache
         self.episode_folder_pattern = episode_folder_pattern
-        self.with_segmentation = with_segmentation
+        self.val_with_segmentation = val_with_segmentation
         self.segmentation_folder = segmentation_folder
         self.segmentation_extension = segmentation_extension
 
@@ -72,7 +76,7 @@ class EpisodesDataset(Dataset):
             self.index2episode.extend([len(self.episode_images) - 1] * actual_length)
             self.episode2offset.append(self.episode2offset[-1] + actual_length)
 
-            if self.with_segmentation:
+            if self.val_with_segmentation:
                 seg_dir = os.path.join(dir_name, self.segmentation_folder)
                 if not os.path.isdir(seg_dir):
                     raise FileNotFoundError(
@@ -103,7 +107,7 @@ class EpisodesDataset(Dataset):
 
             self.episode_images = episode_image_bytes
 
-            if self.with_segmentation:
+            if self.val_with_segmentation:
                 episode_segmentation_bytes = []
                 for paths in tqdm(self.episode_segmentations, desc=f'Caching segmentations: {self.split}'):
                     seg_bytes = []
@@ -120,18 +124,24 @@ class EpisodesDataset(Dataset):
         segmentation = None
         if self.kind == 'video':
             episode_images = self.episode_images[index]
-            start_index = np.random.randint(0, len(episode_images) - self.sequence_length + 1)
+            if self.full_episode:
+                start_index = 0
+                end_index = len(episode_images)
+            else:
+                start_index = np.random.randint(0, len(episode_images) - self.sequence_length + 1)
+                end_index = start_index + self.sequence_length
+
             image_sequence = []
-            for image_index in range(start_index, start_index + self.sequence_length):
+            for image_index in range(start_index, end_index):
                 img = np.array(Image.open(episode_images[image_index]))
                 image_sequence.append(img)
 
             data = np.stack(image_sequence)
 
-            if self.with_segmentation:
+            if self.val_with_segmentation:
                 episode_segmentations = self.episode_segmentations[index]
                 mask_sequence = []
-                for image_index in range(start_index, start_index + self.sequence_length):
+                for image_index in range(start_index, end_index):
                     mask = np.array(Image.open(episode_segmentations[image_index]))
                     mask_sequence.append(mask)
                 # (F, H, W) -> (F, H, W, 1): trailing channel expected by `ToTensorMask`.
