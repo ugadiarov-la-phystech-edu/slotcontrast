@@ -300,8 +300,9 @@ class AdjustedRandIndex(Metric):
         # Special case: skip samples without any ground truth mask
         non_empty = n_true_classes_per_point.sum(dim=-1) > 0
         values = values[non_empty]
-
-        self.values += values.sum()
+        values = values.to(self.values.dtype)
+        for v in values:
+            self.values += v
         self.total += len(values)
 
     def compute(self):
@@ -473,8 +474,9 @@ class IntersectionOverUnion(Metric):
         # Special case: skip samples without any ground truth mask
         non_empty = n_true_classes > 0
         mean_iou = mean_iou[non_empty]
-
-        self.values += mean_iou.sum()
+        mean_iou = mean_iou.to(self.values.dtype)
+        for v in mean_iou:
+            self.values += v
         self.total += len(mean_iou)
 
     def compute(self):
@@ -796,9 +798,15 @@ class JandFMetric(Metric):
             all_f_measure, true_idxs, pred_idxs, n_true_classes
         )
 
-        self.j_and_f += j_and_f.sum()
-        self.jaccard += jaccard.sum()
-        self.f_measure += f_measure.sum()
+        j_and_f = j_and_f.to(self.j_and_f.dtype)
+        jaccard = jaccard.to(self.jaccard.dtype)
+        f_measure = f_measure.to(self.f_measure.dtype)
+        for v in j_and_f:
+            self.j_and_f += v
+        for v in jaccard:
+            self.jaccard += v
+        for v in f_measure:
+            self.f_measure += v
         self.total += len(j_and_f)
 
     def compute(self):
