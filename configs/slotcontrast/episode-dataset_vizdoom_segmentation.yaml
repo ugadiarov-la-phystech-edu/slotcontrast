@@ -1,0 +1,194 @@
+experiment_group: slotcontrast
+experiment_name: vizdoom
+
+globals:
+  NUM_SLOTS: 6
+  SLOT_DIM: 64
+  DINO_MODEL: vit_small_patch14_dinov2
+  FEAT_DIM: 384
+  NUM_PATCHES: 576
+  NUM_GPUS: 1
+  BATCH_SIZE_PER_GPU: 64
+  TOTAL_BATCH_SIZE: "${mul: ${.NUM_GPUS}, ${.BATCH_SIZE_PER_GPU}}"
+
+trainer:
+  max_steps: 100000
+  log_every_n_steps: 100
+  val_check_interval: 312
+  gradient_clip_val: 0.05
+  accumulate_grad_batches: 1
+
+optimizer:
+  name: Adam
+  lr: 0.0004
+  lr_scheduler:
+    name: exp_decay_with_warmup
+    warmup_steps: 2500
+    decay_steps: ${trainer.max_steps}
+
+model:
+  input_type: video
+  visualize: true
+  visualize_every_n_steps: 99999999999
+  visualization_size: [128, 128]
+  masks_to_visualize: [decoder_masks,decoder_masks_vis_hard,grouping_masks,grouping_masks_vis_hard]
+  compute_val_loss: true
+  losses:
+    loss_featrec:
+      name: MSELoss
+      pred_dims:
+        - 0
+        - ${globals.FEAT_DIM}
+    loss_ss:
+      name: Slot_Slot_Contrastive_Loss
+      pred_key: processor.state
+      temperature: 0.1
+      batch_contrast: true
+      patch_inputs: false
+      keep_input_dim: true
+    loss_image_reconstruction: null
+
+  loss_weights:
+    loss_featrec: 1.0
+    loss_ss: 0.0
+    loss_image_reconstruction: null
+
+  initializer:
+    name: FixedLearnedInit
+    n_slots: ${globals.NUM_SLOTS}
+    dim: ${globals.SLOT_DIM}
+
+  encoder:
+    backbone:
+      name: TimmExtractor
+      model: ${globals.DINO_MODEL}
+      features:
+      - vit_block12
+      - vit_block_keys12
+      frozen: true
+      pretrained: true
+      model_kwargs:
+        dynamic_img_size: True
+    output_transform:
+      name: networks.two_layer_mlp
+      inp_dim: ${globals.FEAT_DIM}
+      outp_dim: ${globals.SLOT_DIM}
+      hidden_dim: "${mul: ${globals.FEAT_DIM}, 2}"
+      layer_norm: true
+
+  grouper:
+    name: SlotAttention
+    inp_dim: ${globals.SLOT_DIM}
+    slot_dim: ${globals.SLOT_DIM}
+    n_iters: 2
+    use_mlp: true
+
+  latent_processor:
+    first_step_corrector_args:
+      n_iters: 3
+
+  decoder:
+    name: MLPDecoder
+    inp_dim: ${globals.SLOT_DIM}
+    outp_dim: ${globals.FEAT_DIM}
+    hidden_dims: [1024, 1024, 1024]
+    n_patches: ${globals.NUM_PATCHES}
+
+  predictor:
+    name: networks.TransformerEncoder
+    dim: ${globals.SLOT_DIM}
+    n_blocks: 1
+    n_heads: 4
+
+# Validation segmentation metrics. The ground-truth masks come from the per-episode
+# `segmentation/` folders (dense single-channel PNGs), remapped + one-hot encoded by the
+# dataset (see `dataset.val_transforms.segmentation_id_map`). Background is class 0.
+val_metrics:
+  ari:
+    name: VideoARI
+    ignore_background: true
+    pred_key: decoder_masks_hard
+    true_key: segmentations
+  image_ari:
+    name: ImageARI
+    ignore_background: true
+    video_input: true
+    pred_key: decoder_masks_hard
+    true_key: segmentations
+  mbo:
+    name: VideoIoU
+    matching: overlap
+    ignore_background: true
+    pred_key: decoder_masks_hard
+    true_key: segmentations
+  image_mbo:
+    name: ImageIoU
+    matching: overlap
+    ignore_background: true
+    video_input: true
+    pred_key: decoder_masks_hard
+    true_key: segmentations
+
+dataset:
+  name: EpisodesDataModule
+  source_root: null
+  extension: jpg
+  sequence_length: 4
+  val_mode: full_episode
+  train_batch_size: ${globals.BATCH_SIZE_PER_GPU}
+  val_batch_size: 4
+  num_workers: 8
+  train_episode_folder_pattern: "*"
+  cache: false
+  pin_memory: false
+  persistent_workers: false
+  # Load ground-truth segmentation for the val split only (train has none).
+  val_with_segmentation: true
+  segmentation_folder: segmentation
+  segmentation_extension: png
+  train_transforms:
+    name: episodes-dataset_train
+    type: video
+    input_size: 336
+    rotation_prob: 0.0
+    h_flip_prob: 0.5
+  val_transforms:
+    name: episodes-dataset_val
+    type: video
+    input_size: 336
+    # Augmentations must be off when loading segmentations.
+    rotation_prob: 0.0
+    h_flip_prob: 0.0
+    # Remap source ids from val/info.json to contiguous target classes
+    # `num_classes` is derived as max(target)+1 (here 4).
+    # Mapping must cover every id that appears.
+    segmentation_id_map:
+      # background must be 0: Walls + Floor_Ceiling + Blood + Blood + BulletPuff + BulletPuff
+      0: [0, 1, 9, 11, 10, 14]
+      # Demon
+      1: [2]
+      # Demon
+      2: [3]
+      # Demon
+      3: [4]
+      # DoomImp
+      4: [5]
+      # DoomImp
+      5: [6]
+      # DoomImp
+      6: [7]
+      # DoomPlayer
+      7: [8]
+      # DoomImpBall
+      8: [12]
+      # DoomImpBall
+      9: [13]
+      # DoomImpBall
+      10: [15]
+      # DoomImpBall
+      11: [16]
+
+comet:
+  project: null
+  run_name: null
+  run_id: null
