@@ -189,7 +189,7 @@ def build(config):
     elif dataset == "episodes-dataset":
         if "target_size" in config:
             raise NotImplementedError("Separate targets not implemented for transform `episodes-dataset`")
-        if split == "val" and config.get("segmentation_id_map") is not None:
+        if split == "val" and "segmentation_id_map" in config:
             # Geometric augmentations must be off when loading segmentations.
             assert not (h_flip_prob and h_flip_prob > 0), (
                 "Disable `h_flip_prob` in val transforms when loading segmentations."
@@ -197,7 +197,7 @@ def build(config):
             assert not (rotation_prob and rotation_prob > 0), (
                 "Disable `rotation_prob` in val transforms when loading segmentations."
             )
-            remap = RemapMask(config.segmentation_id_map)
+            remap = torch.nn.Identity() if config.segmentation_id_map is None else RemapMask(config.segmentation_id_map)
             num_classes = config.num_classes if config.get("num_classes") else remap.num_targets
             transforms["segmentations"] = tvt.Compose(
                 [
