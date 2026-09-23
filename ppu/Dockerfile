@@ -21,6 +21,7 @@ RUN python3 -m pip install --no-cache-dir --upgrade-strategy only-if-needed \
     "moviepy==1.0.3" \
     "av==12.0.0" \
     "comet-ml==3.57.3" \
+    "matplotlib==3.10.8" \
     "requests==2.32.5"
 
 COPY slotcontrast /opt/slotcontrast/slotcontrast
