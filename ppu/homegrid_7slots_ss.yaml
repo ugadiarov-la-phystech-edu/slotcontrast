@@ -123,7 +123,7 @@ dataset:
     num_classes: 0
 
 comet:
-  project: null
+  project: slotcontrast-homegrid
   run_name: homegrid_7slots_ss05
   run_id: null
 
