@@ -1,9 +1,11 @@
 ARG BASE_IMAGE
 FROM ${BASE_IMAGE}
 
+# The base image points pip at a vendor mirror that requires credentials.
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONPATH=/opt/slotcontrast
+    PYTHONPATH=/opt/slotcontrast \
+    PIP_INDEX_URL=https://pypi.org/simple
 
 # Keep the PPU-specific torch and torchvision supplied by the base image.
 RUN python3 -m pip install --no-cache-dir --upgrade-strategy only-if-needed \
