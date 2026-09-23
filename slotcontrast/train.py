@@ -20,6 +20,7 @@ RESULT_TIMEOUT = 1
 CHECKPOINT_SUBDIR = "checkpoints"
 TENSORBOARD_SUBDIR = "tb"
 METRICS_SUBDIR = "metrics"
+COMET_KEY_FILE = "comet_experiment_key"
 
 parser = argparse.ArgumentParser()
 group = parser.add_mutually_exclusive_group()
@@ -99,11 +100,19 @@ def _setup_loggers(args, log_path: pathlib.Path, config) -> Dict[str, pl.loggers
         )
 
     if 'comet' in config and config.comet is not None and config.comet.project is not None:
-        mode = 'create' if config.comet.run_id is None else 'get'
+        # Requeued jobs restart from scratch, so the experiment key is kept next to the
+        # checkpoints to keep logging into the same Comet experiment.
+        key_path = log_path / COMET_KEY_FILE
+        run_id = config.comet.run_id or None
+        if run_id is None and key_path.exists():
+            run_id = key_path.read_text().strip() or None
+        mode = 'create' if run_id is None else 'get'
         loggers['comet'] = pl.loggers.CometLogger(project_name=config.comet.project,
                                                   experiment_name=config.comet.run_name,
-                                                  experiment_key=config.comet.run_id, mode=mode)
+                                                  experiment_key=run_id, mode=mode)
         loggers['comet'].experiment.log_parameters(OmegaConf.to_container(config, resolve=True))
+        if utils.get_rank() == 0:
+            key_path.write_text(loggers['comet'].experiment.get_key())
 
     # CSV logs go to <log_dir>/<metrics_subdir>/version_N/metrics.csv, where N is the number of
     # restarts of the job
