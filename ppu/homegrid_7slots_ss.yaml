@@ -1,0 +1,154 @@
+optimizer:
+  name: Adam
+  lr: 0.0004
+  lr_scheduler:
+    name: exp_decay_with_warmup
+    warmup_steps: 2500
+    decay_steps: 100000
+
+model:
+  initializer:
+    name: FixedLearnedInit
+    n_slots: 7
+    dim: 64
+  encoder:
+    backbone:
+      name: TimmExtractor
+      model: vit_small_patch14_dinov2
+      features:
+        - vit_block12
+        - vit_block_keys12
+      frozen: true
+      pretrained: true
+      model_kwargs:
+        dynamic_img_size: true
+    output_transform:
+      name: networks.two_layer_mlp
+      inp_dim: 384
+      outp_dim: 64
+      hidden_dim: 768
+      layer_norm: true
+  grouper:
+    name: SlotAttention
+    inp_dim: 64
+    slot_dim: 64
+    n_iters: 2
+    use_mlp: true
+  decoder:
+    name: MLPDecoder
+    inp_dim: 64
+    outp_dim: 384
+    hidden_dims:
+      - 1024
+      - 1024
+      - 1024
+    n_patches: 576
+  image_decoder: null
+  dynamics_predictor: null
+  predictor:
+    name: networks.TransformerEncoder
+    dim: 64
+    n_blocks: 1
+    n_heads: 4
+  target_encoder: null
+  latent_processor:
+    first_step_corrector_args:
+      n_iters: 3
+  mask_resizers: null
+  losses:
+    loss_featrec:
+      name: MSELoss
+      pred_dims:
+        - 0
+        - 384
+    loss_ss:
+      name: Slot_Slot_Contrastive_Loss
+      pred_key: processor.state
+      temperature: 0.1
+      batch_contrast: true
+      patch_inputs: false
+      keep_input_dim: true
+    loss_image_reconstruction: null
+  loss_weights:
+    loss_featrec: 1.0
+    loss_ss: 0.5
+    loss_image_reconstruction: null
+  input_type: video
+  target_type: features
+  target_encoder_input: null
+  visualize: true
+  visualization_size:
+    - 128
+    - 128
+  eval_mode_config: null
+  visualize_every_n_steps: 99999999999
+  masks_to_visualize:
+    - decoder_masks
+    - decoder_masks_vis_hard
+    - grouping_masks
+    - grouping_masks_vis_hard
+  load_weights: null
+  modules_to_load: null
+
+dataset:
+  name: EpisodesDataModule
+  root: /data/homegrid
+  extension: JPEG
+  sequence_length: 4
+  train_batch_size: 64
+  val_batch_size: 4
+  num_workers: 8
+  train_transforms:
+    name: episodes-dataset_train
+    type: video
+    input_size: 336
+    rotation_prob: 0.3
+    h_flip_prob: 0.3
+    color_jitter_brightness: 0.3
+    color_jitter_contrast: 0.3
+    color_jitter_saturation: 0.3
+    color_jitter_hue: 0.0
+    color_jitter_prob: 0.0
+  val_transforms:
+    name: episodes-dataset_val
+    type: video
+    input_size: 336
+    rotation_prob: 0.3
+    h_flip_prob: 0.3
+    color_jitter_brightness: 0.3
+    color_jitter_contrast: 0.3
+    color_jitter_saturation: 0.3
+    color_jitter_hue: 0.0
+    color_jitter_prob: 0.0
+    num_classes: 0
+
+comet:
+  project: null
+  run_name: homegrid_7slots_ss05
+  run_id: null
+
+trainer:
+  max_steps: 150000
+  log_every_n_steps: 100
+  val_check_interval: 312
+  gradient_clip_val: 0.05
+  accumulate_grad_batches: 1
+  accelerator: auto
+
+train_metrics: null
+val_metrics: null
+
+globals:
+  NUM_SLOTS: 7
+  SLOT_DIM: 64
+  DINO_MODEL: vit_small_patch14_dinov2
+  FEAT_DIM: 384
+  NUM_PATCHES: 576
+  NUM_GPUS: 1
+  BATCH_SIZE_PER_GPU: 64
+  TOTAL_BATCH_SIZE: 64
+
+experiment_name: homegrid_7slots_ss05
+experiment_group: slotcontrast
+seed: 1134628998
+checkpoint_every_n_steps: 1000
