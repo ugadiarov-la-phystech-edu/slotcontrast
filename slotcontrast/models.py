@@ -1,10 +1,13 @@
 from copy import copy, deepcopy
+from io import BytesIO
+from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 import numpy as np
 import pytorch_lightning as pl
 import torch
 import torchmetrics
+from PIL import Image
 from torch import nn
 from torchvision.utils import make_grid
 
@@ -677,6 +680,50 @@ class ObjectCentricModel(pl.LightningModule):
                         f"input_type should be 'image' or 'video', but got '{self.input_key}'"
                     )
 
+    def _visualization_dir(self) -> Path:
+        root = getattr(self.trainer, "default_root_dir", None) or getattr(self.trainer, "log_dir", ".")
+        path = Path(root) / "visualizations"
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    def _save_local_image(self, name: str, grid: torch.Tensor, step: int) -> None:
+        """Save full-resolution visualization locally (PNG)."""
+        grid = grid.detach().float().cpu().clamp(0, 1)
+        if grid.ndim == 3 and grid.shape[0] in (1, 3, 4):
+            grid = grid.movedim(0, 2)
+        arr = (grid.numpy() * 255.0).round().astype(np.uint8)
+        if arr.ndim == 3 and arr.shape[-1] == 1:
+            arr = arr[..., 0]
+        image = Image.fromarray(arr)
+        out_dir = self._visualization_dir() / name.replace("/", "_")
+        out_dir.mkdir(parents=True, exist_ok=True)
+        image.save(out_dir / f"step_{step:07d}.png")
+
+    @staticmethod
+    def _log_comet_image(experiment, name: str, grid: torch.Tensor, step: int, max_side: int = 256):
+        """Upload a tiny JPEG. Larger assets queue but never finish on this Comet link."""
+        grid = grid.detach().float().cpu().clamp(0, 1)
+        if grid.ndim == 3 and grid.shape[0] in (1, 3, 4):
+            grid = grid.movedim(0, 2)
+        arr = (grid.numpy() * 255.0).round().astype(np.uint8)
+        if arr.ndim == 3 and arr.shape[-1] == 1:
+            arr = arr[..., 0]
+        image = Image.fromarray(arr)
+        width, height = image.size
+        longest = max(width, height)
+        if longest > max_side:
+            scale = max_side / float(longest)
+            image = image.resize(
+                (max(1, int(width * scale)), max(1, int(height * scale))),
+                Image.BILINEAR,
+            )
+        buf = BytesIO()
+        image.save(buf, format="JPEG", quality=70, optimize=True)
+        buf.seek(0)
+        # Comet inspects the buffer name to pick the image decoder.
+        buf.name = f"{name.replace('/', '_')}.jpg"
+        experiment.log_image(buf, name=name, step=step)
+
     def _log_video(
         self,
         name: str,
@@ -690,21 +737,23 @@ class ObjectCentricModel(pl.LightningModule):
         loggers = [self._get_tensorboard_logger(), self._get_comet_logger()]
         loggers = [logger for logger in loggers if logger is not None]
 
+        grid = None
+        if "frames" in types:
+            _, num_frames, _, _, _ = video.shape
+            num_frames = min(max_frames, num_frames)
+            data = video[:, :num_frames].flatten(0, 1)
+            grid = make_grid(data, nrow=num_frames)
+            self._save_local_image(f"{name}/frames", grid, global_step)
+
         for logger in loggers:
             if "video" in types:
                 if not isinstance(logger, pl.loggers.CometLogger):
                     logger.experiment.add_video(f"{name}/video", video, global_step=global_step)
-            if "frames" in types:
-                _, num_frames, _, _, _ = video.shape
-                num_frames = min(max_frames, num_frames)
-                data = video[:, :num_frames]
-                data = data.flatten(0, 1)
+            if grid is not None:
                 if isinstance(logger, pl.loggers.CometLogger):
-                    logger.experiment.log_image(name=f"{name}/frames", image_data=make_grid(data, nrow=num_frames).detach().cpu().movedim(0, 2),
-                                                step=global_step)
+                    self._log_comet_image(logger.experiment, f"{name}/frames", grid, global_step)
                 else:
-                    logger.experiment.add_image(f"{name}/frames", make_grid(data, nrow=num_frames),
-                                                global_step=global_step)
+                    logger.experiment.add_image(f"{name}/frames", grid, global_step=global_step)
 
     def _save_video(self, name: str, data: torch.Tensor, global_step: int):
         assert (
@@ -726,13 +775,14 @@ class ObjectCentricModel(pl.LightningModule):
         data = data[:n_examples]
         loggers = [self._get_tensorboard_logger(), self._get_comet_logger()]
         loggers = [logger for logger in loggers if logger is not None]
+        grid = make_grid(data, nrow=n_examples)
+        self._save_local_image(f"{name}/images", grid, global_step)
 
         for logger in loggers:
             if isinstance(logger, pl.loggers.CometLogger):
-                logger.experiment.log_image(name=f"{name}/images", image_data=make_grid(data, nrow=n_examples),
-                                            step=global_step)
+                self._log_comet_image(logger.experiment, f"{name}/images", grid, global_step)
             else:
-                logger.experiment.add_image(f"{name}/images", make_grid(data, nrow=n_examples), global_step=global_step)
+                logger.experiment.add_image(f"{name}/images", grid, global_step=global_step)
 
     @staticmethod
     def _remove_padding(
