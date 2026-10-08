@@ -671,6 +671,7 @@ class EpisodesDataModule(pl.LightningDataModule):
         val_transforms: Optional[Callable] = None,
         mask_type: Optional[str] = None,
         num_classes: Optional[int] = None,
+        frame_stride: int = 1,
     ):
         super().__init__()
         self.root = root
@@ -683,6 +684,7 @@ class EpisodesDataModule(pl.LightningDataModule):
         self.val_transforms = val_transforms
         self.mask_type = mask_type
         self.num_classes = num_classes
+        self.frame_stride = frame_stride
         self.train_set = None
         self.val_set = None
 
@@ -691,6 +693,7 @@ class EpisodesDataModule(pl.LightningDataModule):
         res.append(f"  - Root: {self.root}")
         res.append(f"  - Extension: {self.extension}")
         res.append(f"  - Sequence length: {self.sequence_length}")
+        res.append(f"  - Frame stride: {self.frame_stride}")
         res.append(f"  - Train batch size: {self.train_batch_size}")
         res.append(f"  - Val batch size: {self.val_batch_size}")
         res.append(f"  - Num workers: {self.num_workers}")
@@ -698,9 +701,9 @@ class EpisodesDataModule(pl.LightningDataModule):
 
     def setup(self, stage):
         self.train_set = EpisodesDataset(self.root, 'train', self.train_transforms, self.extension, 'video',
-                                         self.sequence_length, mask_type=self.mask_type)
+                                         self.sequence_length, mask_type=self.mask_type, frame_stride=self.frame_stride)
         self.val_set = EpisodesDataset(self.root, 'val', self.val_transforms, self.extension, 'video',
-                                       self.sequence_length, mask_type=self.mask_type)
+                                       self.sequence_length, mask_type=self.mask_type, frame_stride=self.frame_stride)
 
     def train_dataloader(self):
         collate_fn = None

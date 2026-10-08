@@ -13,7 +13,7 @@ ImageFile.LOAD_TRUNCATED_IMAGES = True
 
 class EpisodesDataset(Dataset):
     def __init__(self, root, mode, transforms=None, extension='png', kind='video', sequence_length=1,
-                 mask_extension='png', mask_type=None):
+                 mask_extension='png', mask_type=None, frame_stride=1):
         assert mode in ['train', 'val', 'valid', 'test']
         if mode in ('valid', 'test'):
             mode = 'val'
@@ -21,9 +21,12 @@ class EpisodesDataset(Dataset):
         assert kind in ('image', 'video'), f'Expected kind: image or video. Actual: {kind}'
         if kind == 'image':
             assert sequence_length == 1, f'Expected sequence length: 1. Actual: {sequence_length}'
+        assert frame_stride >= 1, f'Expected frame_stride >= 1. Actual: {frame_stride}'
 
         self.kind = kind
         self.sequence_length = sequence_length
+        self.frame_stride = frame_stride
+        self.span = (sequence_length - 1) * frame_stride + 1
         self.transforms = transforms
 
         root = os.path.join(root, mode)
@@ -74,6 +77,8 @@ class EpisodesDataset(Dataset):
             actual_length = len(paths)
             get_file_id = lambda x: get_num(osp.splitext(osp.basename(x))[0])
             paths.sort(key=get_file_id)
+            if self.kind == 'video' and actual_length < self.span:
+                continue
             self.episode_images.append(paths)
             self.index2episode.extend([len(self.episode_images) - 1] * actual_length)
             self.episode2offset.append(self.episode2offset[-1] + actual_length)
@@ -120,10 +125,12 @@ class EpisodesDataset(Dataset):
             episode_images = self.episode_images[index]
             # Extract episode name from first image path
             episode_name = os.path.basename(os.path.dirname(episode_images[0]))
-            start_index = np.random.randint(0, len(episode_images) - self.sequence_length + 1)
+            max_start = len(episode_images) - self.span
+            start_index = np.random.randint(0, max_start + 1)
             image_sequence = []
             mask_sequence = []
-            for image_index in range(start_index, start_index + self.sequence_length):
+            for offset in range(self.sequence_length):
+                image_index = start_index + offset * self.frame_stride
                 img = np.array(Image.open(episode_images[image_index]))
                 image_sequence.append(img)
                 if self.has_masks:
